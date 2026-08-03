@@ -13,7 +13,7 @@ The hardware provides optical input channels based on photodiodes and optical
 output channels driven by IR emitters. An MCU manages the channels and exposes
 the device exclusively through an I2C interface.
 
-The hardware-facing code uses
+The hardware-facing code is intended to use
 [HardwareAbstractionIR](https://github.com/Alan-Jowett/HardwareAbstractionIR/)
 to keep the runtime portable across supported hardware implementations.
 

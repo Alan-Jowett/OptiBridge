@@ -47,9 +47,9 @@ NEXT: Phase N+1 - <Name> (blocked until current phase gate passes)
   feature count.
 - Firmware, I2C register-map, hardware, calibration, and documentation drift
   can all change emitter control, photodiode readings, and interrupt behavior.
-- The README describes the hardware, firmware interface, register map, usage,
-  calibration, and troubleshooting; verify the live repository before assuming
-  additional artifacts exist.
+- The README provides a high-level architecture overview and intended
+  interfaces; verify the live repository before assuming additional artifacts
+  exist.
 
 ## Inputs to Gather
 

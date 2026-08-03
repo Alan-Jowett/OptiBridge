@@ -48,9 +48,9 @@ NEXT: Phase N+1 - <Name> (blocked until current phase gate passes)
   channels and eight photodiode input channels.
 - Runtime priorities are deterministic I2C register behavior, emitter PWM
   control, ADC acquisition, threshold interrupts, and failure-aware operation.
-- The README describes the hardware, firmware interface, register map, usage,
-  calibration, and troubleshooting; verify the live repository before assuming
-  additional paths or artifacts exist.
+- The README provides a high-level architecture overview and intended
+  interfaces; verify the live repository before assuming additional paths or
+  artifacts exist.
 - Treat I2C protocol semantics, PWM and ADC timing, interrupt behavior,
   calibration, and recovery behavior as first-class engineering constraints.
 
