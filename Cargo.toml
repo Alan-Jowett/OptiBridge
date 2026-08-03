@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/optibridge-protocol",
+    "firmware/optibridge",
+    "firmware/i2c-bridge",
+    "xtask",
+]
+exclude = [".generated"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+version = "0.1.0"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
