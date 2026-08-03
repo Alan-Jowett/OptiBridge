@@ -331,6 +331,8 @@ version = "0.1.0"
 dependencies = [
  "ch32v203g6u6-embassy-hal",
  "embassy-executor",
+ "embassy-futures",
+ "embassy-time",
  "embassy-usb",
  "optibridge-protocol",
  "riscv",

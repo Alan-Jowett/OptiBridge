@@ -4,12 +4,15 @@
 use core::{panic::PanicInfo, ptr::addr_of_mut};
 
 use ch32v203g6u6_embassy_hal::{
+    gpio::{DRV_GPIOB_RUNTIME_RESOURCES, GPIOB},
     i2c::{DRV_I2C1_RUNTIME_RESOURCES, I2C1},
     rcc::{DRV_RCC_RUNTIME_RESOURCES, RCC},
     usb::{DRV_USBD_RUNTIME_RESOURCES, USBD, USBDUsbDriver},
     wch,
 };
 use embassy_executor::Spawner;
+use embassy_futures::select::{Either, select};
+use embassy_time::Timer;
 use embassy_usb::{
     Builder, Config, UsbDevice,
     class::cdc_acm::{CdcAcmClass, State as CdcState},
@@ -24,6 +27,37 @@ static mut BOS_DESCRIPTOR: [u8; 256] = [0; 256];
 static mut MSOS_DESCRIPTOR: [u8; 256] = [0; 256];
 static mut CONTROL_BUFFER: [u8; 128] = [0; 128];
 static mut CDC_STATE: CdcState<'static> = CdcState::new();
+
+const DTR_POLL_MS: u64 = 50;
+const GPIOB_CFGLR: *mut u32 = 0x4001_0c00 as *mut u32;
+const GPIOB_BSHR: *mut u32 = 0x4001_0c10 as *mut u32;
+const PB6_MODE_SHIFT: u32 = 24;
+const PB7_MODE_SHIFT: u32 = 28;
+const GPIO_ALT_OPEN_DRAIN_50MHZ: u32 = 0xF;
+
+fn configure_i2c_pins() {
+    unsafe {
+        GPIOB_BSHR.write_volatile((1 << 6) | (1 << 7));
+        let current = GPIOB_CFGLR.read_volatile();
+        let mask = (0xF << PB6_MODE_SHIFT) | (0xF << PB7_MODE_SHIFT);
+        let value = (GPIO_ALT_OPEN_DRAIN_50MHZ << PB6_MODE_SHIFT)
+            | (GPIO_ALT_OPEN_DRAIN_50MHZ << PB7_MODE_SHIFT);
+        GPIOB_CFGLR.write_volatile((current & !mask) | value);
+    }
+}
+
+fn reset_mcu() -> ! {
+    const PFIC_SCTLR: *mut u32 = 0xe000_ed10 as *mut u32;
+    const SYSRESET: u32 = 1 << 31;
+
+    unsafe {
+        PFIC_SCTLR.write_volatile(SYSRESET);
+    }
+
+    loop {
+        core::hint::spin_loop();
+    }
+}
 
 #[panic_handler]
 fn panic(_info: &PanicInfo<'_>) -> ! {
@@ -42,6 +76,11 @@ async fn main(spawner: Spawner) -> ! {
     let rcc = RCC::new(DRV_RCC_RUNTIME_RESOURCES).unwrap();
     rcc.configure_usb_fsdev_clock_48mhz().unwrap();
     wch::init_embassy_time_runtime().unwrap();
+
+    let gpiob = GPIOB::new(DRV_GPIOB_RUNTIME_RESOURCES).unwrap();
+    gpiob.enable_clock().unwrap();
+    gpiob.release_reset().unwrap();
+    configure_i2c_pins();
 
     let i2c = I2C1::new(DRV_I2C1_RUNTIME_RESOURCES).unwrap();
     i2c.enable_clock().unwrap();
@@ -80,13 +119,22 @@ async fn main(spawner: Spawner) -> ! {
 
     loop {
         cdc.wait_connection().await;
+        if cdc.write_packet(b"READY\r\n").await.is_err() {
+            continue;
+        }
         while !cdc.dtr() {
-            core::future::pending::<()>().await;
+            Timer::after_millis(DTR_POLL_MS).await;
         }
         while cdc.dtr() {
-            let received = match cdc.read_packet(&mut input).await {
-                Ok(length) => length,
-                Err(_) => break,
+            let received = match select(
+                cdc.read_packet(&mut input),
+                Timer::after_millis(DTR_POLL_MS),
+            )
+            .await
+            {
+                Either::First(Ok(length)) => length,
+                Either::First(Err(_)) => break,
+                Either::Second(()) => continue,
             };
             parser.reset();
             let mut request = None;
@@ -100,16 +148,28 @@ async fn main(spawner: Spawner) -> ! {
                     }
                 }
             }
-            let length = handle_request(&i2c, request, &mut i2c_read, &mut output);
+            let length = handle_request(&i2c, &cdc, request, &mut i2c_read, &mut output).await;
             if cdc.write_packet(&output[..length]).await.is_err() {
                 break;
             }
         }
+
+        reset_mcu();
     }
 }
 
-fn handle_request(
+async fn reset_on_dtr_drop(cdc: &CdcAcmClass<'static, USBDUsbDriver>) {
+    loop {
+        Timer::after_millis(DTR_POLL_MS).await;
+        if !cdc.dtr() {
+            reset_mcu();
+        }
+    }
+}
+
+async fn handle_request(
     i2c: &I2C1,
+    cdc: &CdcAcmClass<'static, USBDUsbDriver>,
     request: Option<Request>,
     read_buffer: &mut [u8; 16],
     output: &mut [u8; MAX_FRAME],
@@ -127,7 +187,15 @@ fn handle_request(
     let address = request.payload[0];
     match request.command {
         CMD_I2C_WRITE => {
-            let result = i2c.blocking_write_7bit(address, &request.payload[1..length]);
+            let result = match select(
+                i2c.write_async_7bit(address, &request.payload[1..length]),
+                reset_on_dtr_drop(cdc),
+            )
+            .await
+            {
+                Either::First(result) => result,
+                Either::Second(()) => reset_mcu(),
+            };
             encode_response(
                 if result.is_ok() {
                     STATUS_OK
@@ -143,10 +211,16 @@ fn handle_request(
         }
         CMD_I2C_READ if length == 2 && request.payload[1] as usize <= read_buffer.len() => {
             let count = request.payload[1] as usize;
-            let status = if i2c
-                .blocking_read_7bit(address, &mut read_buffer[..count])
-                .is_ok()
+            let result = match select(
+                i2c.read_async_7bit(address, &mut read_buffer[..count]),
+                reset_on_dtr_drop(cdc),
+            )
+            .await
             {
+                Either::First(result) => result,
+                Either::Second(()) => reset_mcu(),
+            };
+            let status = if result.is_ok() {
                 STATUS_OK
             } else {
                 STATUS_BAD_COMMAND
