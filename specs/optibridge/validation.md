@@ -5,7 +5,7 @@
 | ID | Requirement coverage | Method | Expected result |
 | --- | --- | --- | --- |
 | VAL-OPT-001 | REQ-OPT-FW-005, REQ-OPT-FW-006 | `cargo test -p optibridge-protocol` | Valid frames, framing failures, and the `alive` response pass. |
-| VAL-OPT-002 | REQ-OPT-FW-007 | Extend `cargo test -p optibridge-protocol` with error-dispatch cases. | Flags, unsupported command, and nonempty `alive` payload return the required status-only response. |
+| VAL-OPT-002 | REQ-OPT-FW-007 | `cargo test -p optibridge-protocol` | Flags, unsupported command, and nonempty `alive` payload return the required status-only response. |
 | VAL-OPT-003 | REQ-OPT-FW-001, REQ-OPT-FW-002, REQ-OPT-FW-009 | `cargo build --release -p optibridge-firmware --target riscv32imc-unknown-none-elf --features firmware` | Firmware compiles and links with generated HAL and Sonde probe. |
 | VAL-OPT-004 | REQ-OPT-FW-010 | `cargo xtask size` | OptiBridge release image is at or below 32,768 bytes. |
 
@@ -65,10 +65,8 @@ I2C START, address `0x42` ACK, request bytes, and read response bytes.
 ## Deferred validation
 
 No automated firmware-level test currently controls the I2C slave packet
-boundaries, injects I2C receive/write errors, or validates OptiBridge
-error-response dispatch. The packet-behavior cases are therefore required
-hardware or future harness validation, and VAL-OPT-002 is required future
-test coverage.
+boundaries or injects I2C receive/write errors. The packet-behavior cases are
+therefore required hardware or future harness validation.
 
 ## Traceability
 
