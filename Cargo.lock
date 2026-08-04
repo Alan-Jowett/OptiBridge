@@ -381,6 +381,7 @@ dependencies = [
  "optibridge-protocol",
  "riscv",
  "riscv-rt",
+ "sonde-bpf",
 ]
 
 [[package]]
@@ -497,6 +498,11 @@ dependencies = [
  "quote",
  "syn 3.0.3",
 ]
+
+[[package]]
+name = "sonde-bpf"
+version = "0.8.0"
+source = "git+https://github.com/Alan-Jowett/sonde.git?rev=cacc8edfbd59c09d9425aa6b93939c7bf85ff8d5#cacc8edfbd59c09d9425aa6b93939c7bf85ff8d5"
 
 [[package]]
 name = "ssmarshal"
