@@ -113,7 +113,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(usb_task(usb)).unwrap();
 
     let mut parser = Parser::new();
-    let mut input = [0; 64];
+    let mut input = [0; MAX_FRAME];
     let mut output = [0; MAX_FRAME];
     let mut i2c_read = [0; 16];
 

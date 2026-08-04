@@ -83,9 +83,15 @@ The initial OptiBridge protocol is a compact binary frame:
 request/response: magic, command-or-status, payload-length, sequence, flags, payload
 ```
 
-The alive command is `0x01`, the magic byte is `0xA5`, and the successful
-response payload is the ASCII bytes `alive`. Payloads are bounded to 16 bytes;
-reserved flags must be zero.
+The six action commands are Reset (`0x01`), Load BPF (`0x02`), Start BPF
+(`0x03`), Read BPF map (`0x04`), Write BPF map (`0x05`), and Read Status
+(`0x06`). Payloads are bounded to 16 bytes; reserved flags must be zero.
+
+Only Read Status is currently functional: it removes and returns the newest
+startup status payload, initially `ready`. An empty status queue returns
+`STATUS_OK` with an empty payload. The other five actions return
+`STATUS_NOT_IMPLEMENTED`; they do not yet reset the MCU or implement BPF, map,
+or optical behavior.
 
 The USB bridge uses the same frame format:
 

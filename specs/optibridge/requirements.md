@@ -2,13 +2,13 @@
 
 ## Scope
 
-This specification describes the currently implemented CH32V203G6U6 OptiBridge
-firmware only. It is an I2C slave that responds to the shared `alive` request
-and runs a fixed Sonde BPF size probe at startup.
+This specification describes the CH32V203G6U6 OptiBridge firmware's bounded
+I2C action surface. It exposes six README-defined actions as no-side-effect
+stubs and exposes startup liveness through Read Status.
 
-**KNOWN:** BPF loading, verification beyond the probe, maps, helpers, optical
-I/O, calibration, interrupts, and status buffers are not implemented and are
-out of scope.
+**KNOWN:** BPF loading, verification beyond the startup probe, maps, helpers,
+optical I/O, calibration, interrupts, and a general status-buffer API are not
+implemented and are out of scope.
 
 ## Requirements
 
@@ -60,37 +60,75 @@ bytes 5..: payload
 Request flags are reserved and **MUST** be zero. Responses **MUST** set flags
 to zero.
 
-### REQ-OPT-FW-006: Alive command
-
-A request with command `0x01`, zero payload, and zero flags **MUST** return
-`STATUS_OK` (`0x00`) with the same sequence and ASCII payload `alive`.
-
-### REQ-OPT-FW-007: Request errors
-
-Nonzero flags **MUST** return `STATUS_BAD_FLAGS` (`0x03`). An unsupported
-command **MUST** return `STATUS_BAD_COMMAND` (`0x01`). An `alive` request with
-a nonempty payload **MUST** return `STATUS_BAD_LENGTH` (`0x02`). Each such
-response **MUST** be status-only and retain the request sequence.
-
-### REQ-OPT-FW-008: I2C error behavior
+### REQ-OPT-FW-006: I2C error behavior
 
 An I2C receive error **MUST** clear parser state and return to the receive
 loop. An I2C response-write error **MUST** be ignored; the implementation
 continues to the next receive operation.
 
-### REQ-OPT-FW-009: Sonde size probe
+### REQ-OPT-FW-007: Sonde size probe
 
 Startup **MUST** execute the fixed two-instruction Sonde BPF program that
 returns `42`. If the probe fails or produces another value, firmware **MUST**
 panic. This probe **MUST NOT** be represented as a BPF program loader or
 runtime feature.
 
-### REQ-OPT-FW-010: Resource constraints
+### REQ-OPT-FW-008: Resource constraints
 
 The firmware **MUST** be `no_std` and allocation-free. Its release `text +
 data` flash use **MUST NOT** exceed 32,768 bytes.
 
-## Deferred functionality
+### REQ-OPT-ACT-001: Action command identifiers
 
-The README describes a future programmable optical runtime. It is outside this
-specification and has no current firmware requirements.
+`CMD_ALIVE` **MUST NOT** be present. The shared protocol **MUST** define the
+following action commands:
+
+| Command | Value |
+| --- | ---: |
+| `CMD_RESET` | `0x01` |
+| `CMD_LOAD_BPF` | `0x02` |
+| `CMD_START_BPF` | `0x03` |
+| `CMD_READ_BPF_MAP` | `0x04` |
+| `CMD_WRITE_BPF_MAP` | `0x05` |
+| `CMD_READ_STATUS` | `0x06` |
+
+### REQ-OPT-ACT-002: Status storage
+
+Startup **MUST** initialize fixed-capacity, allocation-free status storage with
+the ASCII message `ready`. Status storage **MUST** retain only its newest
+message and its message **MUST NOT** exceed 16 bytes.
+
+### REQ-OPT-ACT-003: Read Status
+
+`CMD_READ_STATUS` **MUST** require zero flags and zero payload. It **MUST**
+return `STATUS_OK`, retain the request sequence, and include the newest status
+while removing it from status storage. When no status is available, it **MUST**
+return `STATUS_OK` with an empty payload.
+
+The initial response payload **MUST** be ASCII `ready`.
+
+### REQ-OPT-ACT-004: Stub request validation
+
+`CMD_RESET`, `CMD_LOAD_BPF`, `CMD_START_BPF`, `CMD_READ_BPF_MAP`, and
+`CMD_WRITE_BPF_MAP` **MUST** require zero flags and zero payload. Nonzero flags
+**MUST** return `STATUS_BAD_FLAGS`; a nonempty payload **MUST** return
+`STATUS_BAD_LENGTH`.
+
+### REQ-OPT-ACT-005: Stub behavior
+
+The five non-status commands **MUST NOT** reset the MCU, mutate runtime state,
+load or execute BPF, access maps, or access optical hardware.
+
+They **MUST** return status-only `STATUS_NOT_IMPLEMENTED` (`0x04`) and retain
+the request sequence.
+
+### REQ-OPT-ACT-006: Unknown commands
+
+Commands outside the six defined action values **MUST** return status-only
+`STATUS_BAD_COMMAND` and retain the request sequence.
+
+### REQ-OPT-ACT-007: Deferred action semantics
+
+Actual reset behavior, BPF loading/execution, map semantics, optical behavior,
+additional status enqueue sources, and a general circular-status-buffer API
+**MUST NOT** be introduced by this change.

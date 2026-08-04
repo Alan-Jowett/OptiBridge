@@ -84,18 +84,18 @@ assuming a large buffer.
 ## Expected bridge transaction
 
 The bridge protocol uses compact binary frames with magic byte `0xA5`.
-To query the OptiBridge, the bridge must perform two I2C operations:
+To check OptiBridge liveness, the bridge must perform two I2C operations:
 
-1. Write the alive request to address `0x42`:
+1. Write the Read Status request to address `0x42`:
 
    ```text
-   A5 01 00 01 00
+   A5 06 00 01 00
    ```
 
 2. Read the response from address `0x42`. The expected response is:
 
    ```text
-   A5 00 05 01 00 61 6C 69 76 65
+   A5 00 05 01 00 72 65 61 64 79
    ```
 
 When sent through the USB bridge, the host sends a bridge-write frame first,

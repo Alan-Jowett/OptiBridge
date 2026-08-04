@@ -131,7 +131,7 @@ The release image's flash consumption (`text + data`) **MUST NOT** exceed
 
 ## Non-goals
 
-- I2C slave behavior or OptiBridge alive semantics.
+- I2C slave behavior or OptiBridge Read Status semantics.
 - USB CDC line coding behavior.
 - I2C bus recovery without resetting the MCU.
 - Host-side SDK, CLI, retry, or device-discovery policy.
