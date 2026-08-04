@@ -18,8 +18,8 @@ use embassy_usb::{
     class::cdc_acm::{CdcAcmClass, State as CdcState},
 };
 use optibridge_protocol::{
-    CMD_I2C_READ, CMD_I2C_WRITE, MAX_FRAME, Parser, Request, STATUS_BAD_COMMAND, STATUS_BAD_LENGTH,
-    STATUS_OK, encode_response,
+    CMD_I2C_READ, CMD_I2C_WRITE, MAX_FRAME, Parser, Request, STATUS_BAD_COMMAND, STATUS_BAD_FLAGS,
+    STATUS_BAD_LENGTH, STATUS_OK, encode_response,
 };
 
 static mut CONFIG_DESCRIPTOR: [u8; 256] = [0; 256];
@@ -178,7 +178,7 @@ async fn handle_request(
         return encode_response(STATUS_BAD_LENGTH, 0, 0, &[], output).unwrap_or(5);
     };
     if request.flags != 0 {
-        return encode_response(STATUS_BAD_COMMAND, request.sequence, 0, &[], output).unwrap_or(5);
+        return encode_response(STATUS_BAD_FLAGS, request.sequence, 0, &[], output).unwrap_or(5);
     }
     let length = request.payload_len as usize;
     if length == 0 {
