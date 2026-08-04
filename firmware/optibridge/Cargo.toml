@@ -19,7 +19,7 @@ required-features = ["firmware"]
 optibridge-protocol = { path = "../../crates/optibridge-protocol", default-features = false }
 
 [target.'cfg(target_arch = "riscv32")'.dependencies]
-ch32v203g6u6-embassy-hal = { package = "ch32v203g6u6-embassy-hal", path = "../../.generated/ch32v203g6u6/embassy", features = ["i2c-async", "rcc", "wch-runtime"] }
+ch32v203g6u6-embassy-hal = { package = "ch32v203g6u6-embassy-hal", path = "../../.generated/ch32v203g6u6/embassy", features = ["gpio", "i2c-async", "rcc", "wch-runtime"] }
 embassy-executor = { version = "0.7.0", features = ["arch-spin", "executor-thread"] }
 riscv = { version = "0.12", features = ["critical-section-single-hart"] }
 riscv-rt = "0.13"

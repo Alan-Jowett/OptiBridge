@@ -3,9 +3,35 @@
 
 use core::panic::PanicInfo;
 
-use ch32v203g6u6_embassy_hal::i2c::{DRV_I2C1_SLAVE_RUNTIME_RESOURCES, I2C1Slave};
+use ch32v203g6u6_embassy_hal::{
+    gpio::{DRV_GPIOB_RUNTIME_RESOURCES, GPIOB},
+    i2c::{DRV_I2C1_SLAVE_RUNTIME_RESOURCES, I2C1Slave},
+    rcc::{DRV_RCC_RUNTIME_RESOURCES, RCC},
+    wch,
+};
 use embassy_executor::Spawner;
 use optibridge_protocol::{MAX_FRAME, Parser, dispatch};
+
+const GPIOB_CFGLR: *mut u32 = 0x4001_0c00 as *mut u32;
+const GPIOB_BSHR: *mut u32 = 0x4001_0c10 as *mut u32;
+const RCC_APB2PCENR: *mut u32 = 0x4002_1018 as *mut u32;
+const AFIO_PCFR1: *mut u32 = 0x4001_0004 as *mut u32;
+const PB6_MODE_SHIFT: u32 = 24;
+const PB7_MODE_SHIFT: u32 = 28;
+const GPIO_ALT_OPEN_DRAIN_50MHZ: u32 = 0xF;
+
+fn configure_i2c_pins() {
+    unsafe {
+        RCC_APB2PCENR.write_volatile(RCC_APB2PCENR.read_volatile() | 1);
+        AFIO_PCFR1.write_volatile(AFIO_PCFR1.read_volatile() & !2);
+        GPIOB_BSHR.write_volatile((1 << 6) | (1 << 7));
+        let current = GPIOB_CFGLR.read_volatile();
+        let mask = (0xF << PB6_MODE_SHIFT) | (0xF << PB7_MODE_SHIFT);
+        let value = (GPIO_ALT_OPEN_DRAIN_50MHZ << PB6_MODE_SHIFT)
+            | (GPIO_ALT_OPEN_DRAIN_50MHZ << PB7_MODE_SHIFT);
+        GPIOB_CFGLR.write_volatile((current & !mask) | value);
+    }
+}
 
 #[panic_handler]
 fn panic(_info: &PanicInfo<'_>) -> ! {
@@ -16,6 +42,15 @@ fn panic(_info: &PanicInfo<'_>) -> ! {
 
 #[embassy_executor::main(entry = "riscv_rt::entry")]
 async fn main(_spawner: Spawner) -> ! {
+    let rcc = RCC::new(DRV_RCC_RUNTIME_RESOURCES).unwrap();
+    rcc.configure_usb_fsdev_clock_48mhz().unwrap();
+    wch::init_embassy_time_runtime().unwrap();
+
+    let gpiob = GPIOB::new(DRV_GPIOB_RUNTIME_RESOURCES).unwrap();
+    gpiob.enable_clock().unwrap();
+    gpiob.release_reset().unwrap();
+    configure_i2c_pins();
+
     let i2c = I2C1Slave::new(DRV_I2C1_SLAVE_RUNTIME_RESOURCES).unwrap();
     i2c.enable_clock().unwrap();
     i2c.release_reset().unwrap();
