@@ -1,3 +1,6 @@
+---
+description: 'Capture and decode OptiBridge I2C traffic with the connected PicoScope 2204A.'
+---
 # PicoScope I2C Capture
 
 Use this skill when debugging I2C traffic on the OptiBridge CH32V203G6U6
