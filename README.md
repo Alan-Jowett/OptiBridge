@@ -58,6 +58,47 @@ It also owns reset handling and the circular status buffer used for diagnostics.
 Implementation details and resource limits beyond the 1,024-instruction program
 limit will be documented separately.
 
+### Initial firmware workspace
+
+The repository contains two firmware packages and a shared, allocation-free
+protocol crate. Generate the external CH32V203G6U6 HAL before building firmware:
+
+```powershell
+cargo xtask generate-hal
+cargo test -p optibridge-protocol
+cargo build --release -p optibridge-firmware --target riscv32imc-unknown-none-elf --features firmware
+cargo build --release -p i2c-bridge-firmware --target riscv32imc-unknown-none-elf --features firmware
+cargo xtask size
+```
+
+The generated HAL is a path dependency of both firmware packages, so HAL
+generation must run before Cargo resolves either firmware package.
+
+HAL source is generated under `.generated/` from the pinned upstream
+`HardwareAbstractionIR` repository and is intentionally not vendored.
+
+The initial OptiBridge protocol is a compact binary frame:
+
+```text
+request/response: magic, command-or-status, payload-length, sequence, flags, payload
+```
+
+The alive command is `0x01`, the magic byte is `0xA5`, and the successful
+response payload is the ASCII bytes `alive`. Payloads are bounded to 16 bytes;
+reserved flags must be zero.
+
+The USB bridge uses the same frame format:
+
+| Command | Payload | Response |
+|---|---|---|
+| `0x10` I2C write | `[address, bytes...]` | status-only response |
+| `0x11` I2C read | `[address, length]` | status plus read bytes |
+
+I2C addresses are seven-bit values. Read lengths are limited to 16 bytes.
+Malformed frames, unsupported commands, and failed I2C operations return a
+nonzero status response. `cargo xtask size` fails when either release image's
+flash sections exceed 32 KiB.
+
 ## Project Status
 
 OptiBridge is under active development. This README describes the intended

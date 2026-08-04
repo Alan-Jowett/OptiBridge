@@ -1,0 +1,211 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+
+pub const MAGIC: u8 = 0xa5;
+pub const HEADER_LEN: usize = 5;
+pub const MAX_PAYLOAD: usize = 16;
+pub const MAX_FRAME: usize = HEADER_LEN + MAX_PAYLOAD;
+
+pub const CMD_ALIVE: u8 = 0x01;
+pub const CMD_I2C_WRITE: u8 = 0x10;
+pub const CMD_I2C_READ: u8 = 0x11;
+pub const STATUS_OK: u8 = 0x00;
+pub const STATUS_BAD_COMMAND: u8 = 0x01;
+pub const STATUS_BAD_LENGTH: u8 = 0x02;
+pub const STATUS_BAD_FLAGS: u8 = 0x03;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Request {
+    pub command: u8,
+    pub sequence: u8,
+    pub flags: u8,
+    pub payload: [u8; MAX_PAYLOAD],
+    pub payload_len: u8,
+}
+
+impl Request {
+    pub const fn empty() -> Self {
+        Self {
+            command: 0,
+            sequence: 0,
+            flags: 0,
+            payload: [0; MAX_PAYLOAD],
+            payload_len: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParseError {
+    BadMagic,
+    FrameTooLong,
+    BadLength,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Parser {
+    frame: [u8; MAX_FRAME],
+    length: usize,
+}
+
+impl Parser {
+    pub const fn new() -> Self {
+        Self {
+            frame: [0; MAX_FRAME],
+            length: 0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.length = 0;
+    }
+
+    pub fn push(&mut self, byte: u8) -> Result<Option<Request>, ParseError> {
+        if self.length == 0 && byte != MAGIC {
+            return Err(ParseError::BadMagic);
+        }
+        if self.length == MAX_FRAME {
+            self.reset();
+            return Err(ParseError::FrameTooLong);
+        }
+
+        self.frame[self.length] = byte;
+        self.length += 1;
+
+        if self.length == HEADER_LEN {
+            let payload_len = self.frame[2] as usize;
+            if payload_len > MAX_PAYLOAD {
+                self.reset();
+                return Err(ParseError::BadLength);
+            }
+        }
+
+        if self.length >= HEADER_LEN && self.length == HEADER_LEN + self.frame[2] as usize {
+            let mut payload = [0; MAX_PAYLOAD];
+            let payload_len = self.frame[2] as usize;
+            payload[..payload_len].copy_from_slice(&self.frame[HEADER_LEN..self.length]);
+            let request = Request {
+                command: self.frame[1],
+                sequence: self.frame[3],
+                flags: self.frame[4],
+                payload,
+                payload_len: payload_len as u8,
+            };
+            self.reset();
+            return Ok(Some(request));
+        }
+
+        Ok(None)
+    }
+}
+
+impl Default for Parser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub fn encode_response(
+    status: u8,
+    sequence: u8,
+    flags: u8,
+    payload: &[u8],
+    output: &mut [u8; MAX_FRAME],
+) -> Result<usize, ParseError> {
+    if payload.len() > MAX_PAYLOAD {
+        return Err(ParseError::BadLength);
+    }
+    output[0] = MAGIC;
+    output[1] = status;
+    output[2] = payload.len() as u8;
+    output[3] = sequence;
+    output[4] = flags;
+    output[HEADER_LEN..HEADER_LEN + payload.len()].copy_from_slice(payload);
+    Ok(HEADER_LEN + payload.len())
+}
+
+pub fn dispatch(request: &Request, output: &mut [u8; MAX_FRAME]) -> usize {
+    if request.flags != 0 {
+        return encode_response(STATUS_BAD_FLAGS, request.sequence, 0, &[], output)
+            .unwrap_or(HEADER_LEN);
+    }
+    if request.command != CMD_ALIVE || request.payload_len != 0 {
+        return encode_response(
+            if request.command == CMD_ALIVE {
+                STATUS_BAD_LENGTH
+            } else {
+                STATUS_BAD_COMMAND
+            },
+            request.sequence,
+            0,
+            &[],
+            output,
+        )
+        .unwrap_or(HEADER_LEN);
+    }
+
+    encode_response(STATUS_OK, request.sequence, 0, b"alive", output).unwrap_or(HEADER_LEN)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request_bytes(sequence: u8, payload: &[u8]) -> [u8; MAX_FRAME] {
+        let mut bytes = [0; MAX_FRAME];
+        bytes[0] = MAGIC;
+        bytes[1] = CMD_ALIVE;
+        bytes[2] = payload.len() as u8;
+        bytes[3] = sequence;
+        bytes[4] = 0;
+        bytes[HEADER_LEN..HEADER_LEN + payload.len()].copy_from_slice(payload);
+        bytes
+    }
+
+    #[test]
+    fn parses_alive_request() {
+        let bytes = request_bytes(7, &[]);
+        let mut parser = Parser::new();
+        let mut result = None;
+        for byte in bytes.iter().take(HEADER_LEN) {
+            result = parser.push(*byte).unwrap();
+        }
+        assert_eq!(
+            result,
+            Some(Request {
+                command: CMD_ALIVE,
+                sequence: 7,
+                flags: 0,
+                payload: [0; MAX_PAYLOAD],
+                payload_len: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_bad_magic_and_recovers() {
+        let mut parser = Parser::new();
+        assert_eq!(parser.push(0), Err(ParseError::BadMagic));
+        let bytes = request_bytes(1, &[]);
+        for byte in bytes.iter().take(HEADER_LEN - 1) {
+            assert_eq!(parser.push(*byte), Ok(None));
+        }
+        assert!(parser.push(bytes[HEADER_LEN - 1]).unwrap().is_some());
+    }
+
+    #[test]
+    fn dispatches_alive_response() {
+        let request = Request {
+            command: CMD_ALIVE,
+            sequence: 9,
+            flags: 0,
+            payload: [0; MAX_PAYLOAD],
+            payload_len: 0,
+        };
+        let mut output = [0; MAX_FRAME];
+        let length = dispatch(&request, &mut output);
+        assert_eq!(
+            &output[..length],
+            &[MAGIC, STATUS_OK, 5, 9, 0, b'a', b'l', b'i', b'v', b'e']
+        );
+    }
+}

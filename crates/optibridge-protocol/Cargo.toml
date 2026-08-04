@@ -1,0 +1,13 @@
+[package]
+name = "optibridge-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["std"]
+std = []
+
+[lib]
+path = "src/lib.rs"
+
