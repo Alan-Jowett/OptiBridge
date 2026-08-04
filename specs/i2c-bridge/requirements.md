@@ -9,10 +9,6 @@ an I2C slave, or a general-purpose host API.
 This specification governs USB CDC session behavior, binary framing, I2C
 master transactions, recovery, and validation for the bridge.
 
-**KNOWN:** The current implementation resets its parser per CDC packet and
-does not yet satisfy REQ-BRIDGE-004. These requirements define the intended
-post-change behavior.
-
 ## Requirements
 
 ### REQ-BRIDGE-001: Platform and role

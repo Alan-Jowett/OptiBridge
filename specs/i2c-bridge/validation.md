@@ -3,7 +3,7 @@
 ## Required automated validation
 
 | ID | Requirement coverage | Method | Expected result |
-| --- | --- | --- |
+| --- | --- | --- | --- |
 | VAL-BRIDGE-001 | REQ-BRIDGE-003 | `cargo test -p optibridge-protocol` | Parser accepts valid frames and rejects invalid magic/length. |
 | VAL-BRIDGE-002 | REQ-BRIDGE-004 | Host-side bridge parser tests | A frame split at every byte boundary produces one response; three maximum-length frames in one 63-byte input produce three ordered responses. |
 | VAL-BRIDGE-003 | REQ-BRIDGE-005 to REQ-BRIDGE-007 | Dispatcher tests | Valid write/read shapes, invalid address, flags, length errors, unsupported commands, and I2C failure status mappings match the requirements. |
@@ -106,8 +106,9 @@ Interpretation:
 
 ## Deferred validation
 
-The byte-stream fragmentation/coalescing requirements require new host-side
-tests and are not satisfied by the current packet-reset parser implementation.
+The protocol unit suite covers byte-stream fragmentation, coalescing, and
+resynchronization. End-to-end CDC and I2C validation remains pending until the
+new bridge image is flashed and the required hardware validation is performed.
 
 ## Traceability
 

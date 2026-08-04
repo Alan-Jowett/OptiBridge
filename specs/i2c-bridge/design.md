@@ -87,16 +87,6 @@ USB driver as intended by Embassy.
 No transaction timeout, retry policy, or error-specific I2C status is
 implemented. Those are deliberate non-goals for this test harness.
 
-## Current implementation delta
-
-**KNOWN:** `firmware/i2c-bridge/src/main.rs` resets the parser before every
-CDC packet, keeps only the last complete request in a packet, sends
-`STATUS_BAD_LENGTH` for an incomplete packet, includes a read buffer after a
-failed read, and continues rather than resets if the initial `READY` write
-fails. Its CDC receive buffer is only 21 bytes and it does not reject an
-address with bit 7 set. Phase 5 must replace those paths to realize
-REQ-BRIDGE-004, REQ-BRIDGE-005, REQ-BRIDGE-006, and REQ-BRIDGE-008.
-
 ## Traceability
 
 | Design element | Requirements |

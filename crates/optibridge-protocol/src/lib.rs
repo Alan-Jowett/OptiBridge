@@ -131,7 +131,7 @@ pub fn validate_i2c_request(request: &Request) -> Result<(), u8> {
         return Err(STATUS_BAD_COMMAND);
     }
     let payload_len = request.payload_len as usize;
-    if payload_len == 0 {
+    if payload_len == 0 || payload_len > MAX_PAYLOAD {
         return Err(STATUS_BAD_LENGTH);
     }
     if request.payload[0] & 0x80 != 0 {
@@ -299,6 +299,10 @@ mod tests {
         request.command = CMD_I2C_WRITE;
 
         request.payload_len = 0;
+        assert_eq!(validate_i2c_request(&request), Err(STATUS_BAD_LENGTH));
+        request.payload_len = 1;
+
+        request.payload_len = MAX_PAYLOAD as u8 + 1;
         assert_eq!(validate_i2c_request(&request), Err(STATUS_BAD_LENGTH));
         request.payload_len = 1;
 
