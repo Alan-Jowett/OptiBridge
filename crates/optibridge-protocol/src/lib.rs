@@ -41,6 +41,7 @@ impl Request {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// A fixed-capacity, single-entry status queue.
 pub struct StatusQueue {
     newest: [u8; MAX_PAYLOAD],
     newest_len: u8,
@@ -56,8 +57,10 @@ impl StatusQueue {
         }
     }
 
-    pub fn newest(&self) -> &[u8] {
-        &self.newest[..self.newest_len as usize]
+    pub fn pop(&mut self) -> &[u8] {
+        let length = self.newest_len as usize;
+        self.newest_len = 0;
+        &self.newest[..length]
     }
 }
 
@@ -174,7 +177,7 @@ pub fn validate_i2c_request(request: &Request) -> Result<(), u8> {
 
 pub fn dispatch(
     request: &Request,
-    status_queue: &StatusQueue,
+    status_queue: &mut StatusQueue,
     output: &mut [u8; MAX_FRAME],
 ) -> usize {
     if request.flags != 0 {
@@ -188,14 +191,8 @@ pub fn dispatch(
                 return encode_response(STATUS_BAD_LENGTH, request.sequence, 0, &[], output)
                     .unwrap_or(HEADER_LEN);
             }
-            encode_response(
-                STATUS_OK,
-                request.sequence,
-                0,
-                status_queue.newest(),
-                output,
-            )
-            .unwrap_or(HEADER_LEN)
+            encode_response(STATUS_OK, request.sequence, 0, status_queue.pop(), output)
+                .unwrap_or(HEADER_LEN)
         }
         CMD_RESET | CMD_LOAD_BPF | CMD_START_BPF | CMD_READ_BPF_MAP | CMD_WRITE_BPF_MAP => {
             let status = if request.payload_len == 0 {
@@ -370,9 +367,9 @@ mod tests {
             payload: [0; MAX_PAYLOAD],
             payload_len: 0,
         };
-        let status_queue = StatusQueue::ready();
+        let mut status_queue = StatusQueue::ready();
         let mut output = [0; MAX_FRAME];
-        let length = dispatch(&request, &status_queue, &mut output);
+        let length = dispatch(&request, &mut status_queue, &mut output);
         assert_eq!(
             &output[..length],
             &[MAGIC, STATUS_OK, 5, 9, 0, b'r', b'e', b'a', b'd', b'y']
@@ -384,11 +381,11 @@ mod tests {
         let mut request = Request::empty();
         request.command = CMD_READ_STATUS;
         request.sequence = 1;
-        let status_queue = StatusQueue::ready();
+        let mut status_queue = StatusQueue::ready();
 
         request.flags = 1;
         let mut output = [0; MAX_FRAME];
-        let length = dispatch(&request, &status_queue, &mut output);
+        let length = dispatch(&request, &mut status_queue, &mut output);
         assert_eq!(
             &output[..length],
             &[MAGIC, STATUS_BAD_FLAGS, 0, request.sequence, 0]
@@ -396,7 +393,7 @@ mod tests {
 
         request.flags = 0;
         request.command = 0x07;
-        let length = dispatch(&request, &status_queue, &mut output);
+        let length = dispatch(&request, &mut status_queue, &mut output);
         assert_eq!(
             &output[..length],
             &[MAGIC, STATUS_BAD_COMMAND, 0, request.sequence, 0]
@@ -404,7 +401,7 @@ mod tests {
 
         request.command = CMD_READ_STATUS;
         request.payload_len = 1;
-        let length = dispatch(&request, &status_queue, &mut output);
+        let length = dispatch(&request, &mut status_queue, &mut output);
         assert_eq!(
             &output[..length],
             &[MAGIC, STATUS_BAD_LENGTH, 0, request.sequence, 0]
@@ -413,7 +410,7 @@ mod tests {
 
     #[test]
     fn dispatches_action_stubs_as_not_implemented() {
-        let status_queue = StatusQueue::ready();
+        let mut status_queue = StatusQueue::ready();
         let mut request = Request::empty();
         request.sequence = 7;
         let mut output = [0; MAX_FRAME];
@@ -426,14 +423,14 @@ mod tests {
             CMD_WRITE_BPF_MAP,
         ] {
             request.command = command;
-            let length = dispatch(&request, &status_queue, &mut output);
+            let length = dispatch(&request, &mut status_queue, &mut output);
             assert_eq!(
                 &output[..length],
                 &[MAGIC, STATUS_NOT_IMPLEMENTED, 0, request.sequence, 0]
             );
 
             request.payload_len = 1;
-            let length = dispatch(&request, &status_queue, &mut output);
+            let length = dispatch(&request, &mut status_queue, &mut output);
             assert_eq!(
                 &output[..length],
                 &[MAGIC, STATUS_BAD_LENGTH, 0, request.sequence, 0]
@@ -441,7 +438,7 @@ mod tests {
 
             request.payload_len = 0;
             request.flags = 1;
-            let length = dispatch(&request, &status_queue, &mut output);
+            let length = dispatch(&request, &mut status_queue, &mut output);
             assert_eq!(
                 &output[..length],
                 &[MAGIC, STATUS_BAD_FLAGS, 0, request.sequence, 0]
@@ -451,24 +448,21 @@ mod tests {
     }
 
     #[test]
-    fn read_status_peeks_newest_message() {
-        let status_queue = StatusQueue::ready();
+    fn read_status_pops_newest_message() {
+        let mut status_queue = StatusQueue::ready();
         let mut request = Request::empty();
         request.command = CMD_READ_STATUS;
         let mut output = [0; MAX_FRAME];
 
         request.sequence = 1;
-        let first_length = dispatch(&request, &status_queue, &mut output);
+        let first_length = dispatch(&request, &mut status_queue, &mut output);
         assert_eq!(
             &output[..first_length],
             &[MAGIC, STATUS_OK, 5, 1, 0, b'r', b'e', b'a', b'd', b'y']
         );
 
         request.sequence = 2;
-        let second_length = dispatch(&request, &status_queue, &mut output);
-        assert_eq!(
-            &output[..second_length],
-            &[MAGIC, STATUS_OK, 5, 2, 0, b'r', b'e', b'a', b'd', b'y']
-        );
+        let second_length = dispatch(&request, &mut status_queue, &mut output);
+        assert_eq!(&output[..second_length], &[MAGIC, STATUS_OK, 0, 2, 0]);
     }
 }

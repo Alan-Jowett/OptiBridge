@@ -82,7 +82,7 @@ async fn main(_spawner: Spawner) -> ! {
     let mut parser = Parser::new();
     let mut request = [0; MAX_FRAME];
     let mut response = [0; MAX_FRAME];
-    let status_queue = StatusQueue::ready();
+    let mut status_queue = StatusQueue::ready();
 
     loop {
         let received = match i2c.read_packet_async(&mut request).await {
@@ -105,7 +105,7 @@ async fn main(_spawner: Spawner) -> ! {
             }
         }
         if let Some(request) = parsed {
-            let length = dispatch(&request, &status_queue, &mut response);
+            let length = dispatch(&request, &mut status_queue, &mut response);
             let _ = i2c.write_packet_async(&response[..length]).await;
         }
     }

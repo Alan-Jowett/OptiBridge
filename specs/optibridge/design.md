@@ -8,7 +8,7 @@
 | Pin configuration | Selects I2C1 default routing and configures PB6/PB7 as released alternate-function open-drain pins. |
 | I2C slave loop | Receives one I2C packet, packet-scoped parses it, dispatches at most one request, and writes a response. |
 | Shared protocol | Defines action commands/statuses and dispatches bounded action requests. |
-| Status storage | Holds one newest status message, initially `ready`; reads are non-destructive. |
+| Status storage | Holds one newest status message, initially `ready`; reads consume it. |
 | Sonde probe | Retains the external no-std interpreter and validates a fixed `mov r0, 42; exit` program. |
 
 ## Startup sequence
@@ -58,7 +58,7 @@ It validates flags before command-specific payload length. The action table is:
 | Start BPF (`0x03`) | Empty | `STATUS_NOT_IMPLEMENTED` | None |
 | Read BPF map (`0x04`) | Empty | `STATUS_NOT_IMPLEMENTED` | None |
 | Write BPF map (`0x05`) | Empty | `STATUS_NOT_IMPLEMENTED` | None |
-| Read Status (`0x06`) | Empty | `STATUS_OK` + newest message | Non-destructive read |
+| Read Status (`0x06`) | Empty | `STATUS_OK` + newest message | Pop newest message |
 
 `STATUS_NOT_IMPLEMENTED` is `0x04`. Unknown commands retain
 `STATUS_BAD_COMMAND`. All action errors are status-only responses.
@@ -66,10 +66,11 @@ It validates flags before command-specific payload length. The action table is:
 ## Status storage
 
 Status storage is one fixed 16-byte message buffer plus its length. Startup
-writes `ready`; no current action replaces it. Read Status encodes only the
-stored length and bytes and does not alter either value.
+writes `ready`; no current action replaces it. Read Status encodes the stored
+length and bytes, then clears the stored length. When the queue is empty, it
+returns `STATUS_OK` with an empty payload.
 
-This is intentionally not a general status queue. Future sources may replace
+This is intentionally a single-entry status queue. Future sources may replace
 the newest message only after a separate specification defines their ordering,
 capacity, and overflow behavior.
 

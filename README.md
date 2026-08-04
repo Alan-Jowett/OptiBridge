@@ -87,8 +87,9 @@ The six action commands are Reset (`0x01`), Load BPF (`0x02`), Start BPF
 (`0x03`), Read BPF map (`0x04`), Write BPF map (`0x05`), and Read Status
 (`0x06`). Payloads are bounded to 16 bytes; reserved flags must be zero.
 
-Only Read Status is currently functional: it returns the non-destructive
-startup status payload `ready`. The other five actions return
+Only Read Status is currently functional: it removes and returns the newest
+startup status payload, initially `ready`. An empty status queue returns
+`STATUS_OK` with an empty payload. The other five actions return
 `STATUS_NOT_IMPLEMENTED`; they do not yet reset the MCU or implement BPF, map,
 or optical behavior.
 

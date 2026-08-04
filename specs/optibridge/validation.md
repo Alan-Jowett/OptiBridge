@@ -5,7 +5,7 @@
 | ID | Requirement coverage | Method | Expected result |
 | --- | --- | --- | --- |
 | VAL-OPT-001 | REQ-OPT-ACT-001, REQ-OPT-ACT-004 to REQ-OPT-ACT-006 | `cargo test -p optibridge-protocol` | Each action command has its documented status-only response; invalid flags/payload and unknown commands preserve existing error behavior. |
-| VAL-OPT-002 | REQ-OPT-ACT-002, REQ-OPT-ACT-003 | `cargo test -p optibridge-protocol` | Read Status returns `ready` with the request sequence, and repeated reads are identical. |
+| VAL-OPT-002 | REQ-OPT-ACT-002, REQ-OPT-ACT-003 | `cargo test -p optibridge-protocol` | Read Status returns `ready` with the request sequence, then consumes it; the next read returns `STATUS_OK` with an empty payload. |
 | VAL-OPT-003 | REQ-OPT-FW-001, REQ-OPT-FW-002, REQ-OPT-FW-006, REQ-OPT-FW-007 | `cargo build --release -p optibridge-firmware --target riscv32imc-unknown-none-elf --features firmware` | Firmware compiles and links with generated HAL, status storage, and Sonde probe. |
 | VAL-OPT-004 | REQ-OPT-FW-008, REQ-OPT-ACT-007 | `cargo xtask size` | OptiBridge release image is at or below 32,768 bytes. |
 
@@ -28,8 +28,11 @@ Use a seven-bit I2C master at address `0x42`.
    A5 00 05 01 00 72 65 61 64 79
    ```
 
-4. Repeat with a new sequence. Expect the same `ready` payload and the new
-   sequence.
+4. Repeat with a new sequence. Expect:
+
+   ```text
+   A5 00 00 02 00
+   ```
 
 ### Recognized stubs
 

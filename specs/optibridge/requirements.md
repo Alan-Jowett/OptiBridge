@@ -102,7 +102,8 @@ message and its message **MUST NOT** exceed 16 bytes.
 
 `CMD_READ_STATUS` **MUST** require zero flags and zero payload. It **MUST**
 return `STATUS_OK`, retain the request sequence, and include the newest status
-without consuming it.
+while removing it from status storage. When no status is available, it **MUST**
+return `STATUS_OK` with an empty payload.
 
 The initial response payload **MUST** be ASCII `ready`.
 
