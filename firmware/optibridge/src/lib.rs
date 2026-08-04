@@ -1,3 +1,3 @@
 #![no_std]
 
-pub use optibridge_protocol::{Parser, dispatch};
+pub use optibridge_protocol::{Parser, StatusQueue, dispatch};

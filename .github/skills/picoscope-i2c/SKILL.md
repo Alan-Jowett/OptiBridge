@@ -98,8 +98,8 @@ A5 00 00 01 00
 A5 00 06 02 00
 ```
 
-For the OptiBridge alive transaction, write `A5 01 00 01 00` to address
-`0x42`, then read 10 bytes. A correct response payload is `alive`.
+For the OptiBridge liveness transaction, write `A5 06 00 01 00` to address
+`0x42`, then read 10 bytes. A correct response payload is `ready`.
 
 ## Interpretation
 

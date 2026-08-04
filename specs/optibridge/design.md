@@ -4,23 +4,25 @@
 
 | Component | Responsibility |
 | --- | --- |
-| Startup | Runs the Sonde size probe and initializes clock, time, GPIO, and I2C slave resources. |
+| Startup | Runs the Sonde size probe, initializes status storage to `ready`, and initializes clock, time, GPIO, and I2C slave resources. |
 | Pin configuration | Selects I2C1 default routing and configures PB6/PB7 as released alternate-function open-drain pins. |
 | I2C slave loop | Receives one I2C packet, packet-scoped parses it, dispatches at most one request, and writes a response. |
-| Shared protocol | Supplies bounded frame parsing and `alive` command/status dispatch. |
+| Shared protocol | Defines action commands/statuses and dispatches bounded action requests. |
+| Status storage | Holds one newest status message, initially `ready`; reads are non-destructive. |
 | Sonde probe | Retains the external no-std interpreter and validates a fixed `mov r0, 42; exit` program. |
 
 ## Startup sequence
 
 1. Execute the Sonde BPF size probe.
 2. Panic if the interpreter result is not `Ok(42)`.
-3. Configure the 48 MHz USB FS device clock and Embassy time runtime.
-4. Enable and release-reset GPIOB.
-5. Select I2C1 default routing, release PB6/PB7 high, and configure both pins
+3. Initialize the newest-status storage to ASCII `ready`.
+4. Configure the 48 MHz USB FS device clock and Embassy time runtime.
+5. Enable and release-reset GPIOB.
+6. Select I2C1 default routing, release PB6/PB7 high, and configure both pins
    as 50 MHz alternate-function open-drain.
-6. Enable and release-reset I2C1 slave resources.
-7. Initialize I2C1 slave mode and set own address `0x42`.
-8. Enter the receive loop.
+7. Enable and release-reset I2C1 slave resources.
+8. Initialize I2C1 slave mode and set own address `0x42`.
+9. Enter the receive loop.
 
 USB is not otherwise used by this firmware; its clock configuration is current
 startup behavior.
@@ -44,29 +46,39 @@ previous candidate; therefore the final complete frame in one packet is the
 only one dispatched. A parser error resets the parser and stops processing the
 remainder of that packet.
 
-## Protocol dispatch
+## Action dispatch
 
-`dispatch` uses fixed 21-byte request and response buffers. It accepts only:
+The shared protocol keeps the existing 21-byte request and response buffers.
+It validates flags before command-specific payload length. The action table is:
 
-```text
-A5 01 00 <sequence> 00
-```
+| Command | Valid request | Response | Runtime effect |
+| --- | --- | --- | --- |
+| Reset (`0x01`) | Empty | `STATUS_NOT_IMPLEMENTED` | None |
+| Load BPF (`0x02`) | Empty | `STATUS_NOT_IMPLEMENTED` | None |
+| Start BPF (`0x03`) | Empty | `STATUS_NOT_IMPLEMENTED` | None |
+| Read BPF map (`0x04`) | Empty | `STATUS_NOT_IMPLEMENTED` | None |
+| Write BPF map (`0x05`) | Empty | `STATUS_NOT_IMPLEMENTED` | None |
+| Read Status (`0x06`) | Empty | `STATUS_OK` + newest message | Non-destructive read |
 
-and returns:
+`STATUS_NOT_IMPLEMENTED` is `0x04`. Unknown commands retain
+`STATUS_BAD_COMMAND`. All action errors are status-only responses.
 
-```text
-A5 00 05 <sequence> 00 61 6C 69 76 65
-```
+## Status storage
 
-All other complete requests receive the appropriate status-only response from
-the shared protocol dispatcher.
+Status storage is one fixed 16-byte message buffer plus its length. Startup
+writes `ready`; no current action replaces it. Read Status encodes only the
+stored length and bytes and does not alter either value.
+
+This is intentionally not a general status queue. Future sources may replace
+the newest message only after a separate specification defines their ordering,
+capacity, and overflow behavior.
 
 ## Failure behavior
 
 The panic handler spins indefinitely. Startup `unwrap` failures and Sonde
 probe mismatch reach this handler. Receive errors clear parser state; response
-write errors are discarded. No timeout, retry, I2C bus recovery, reset
-command, or other recovery mechanism is implemented.
+write errors are discarded. No timeout, retry, I2C bus recovery, actual reset,
+or other recovery mechanism is implemented.
 
 ## Resource model
 
@@ -78,8 +90,8 @@ the pinned external `sonde-bpf` dependency.
 
 | Design element | Requirements |
 | --- | --- |
-| Platform and startup | REQ-OPT-FW-001, REQ-OPT-FW-002 |
-| Packet parser state machine | REQ-OPT-FW-003, REQ-OPT-FW-004, REQ-OPT-FW-008 |
-| Frame dispatch | REQ-OPT-FW-005, REQ-OPT-FW-006, REQ-OPT-FW-007 |
-| Sonde probe | REQ-OPT-FW-009 |
-| Resource model | REQ-OPT-FW-010 |
+| Platform and startup | REQ-OPT-FW-001, REQ-OPT-FW-002, REQ-OPT-FW-007 |
+| Packet parser state machine | REQ-OPT-FW-003, REQ-OPT-FW-004, REQ-OPT-FW-006 |
+| Action dispatch | REQ-OPT-FW-005, REQ-OPT-ACT-001, REQ-OPT-ACT-003, REQ-OPT-ACT-004, REQ-OPT-ACT-005, REQ-OPT-ACT-006 |
+| Status storage | REQ-OPT-ACT-002, REQ-OPT-ACT-003, REQ-OPT-ACT-007 |
+| Resource model | REQ-OPT-FW-008 |

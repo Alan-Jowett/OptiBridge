@@ -10,7 +10,7 @@ use ch32v203g6u6_embassy_hal::{
     wch,
 };
 use embassy_executor::Spawner;
-use optibridge_protocol::{MAX_FRAME, Parser, dispatch};
+use optibridge_protocol::{MAX_FRAME, Parser, StatusQueue, dispatch};
 
 const GPIOB_CFGLR: *mut u32 = 0x4001_0c00 as *mut u32;
 const GPIOB_BSHR: *mut u32 = 0x4001_0c10 as *mut u32;
@@ -82,6 +82,7 @@ async fn main(_spawner: Spawner) -> ! {
     let mut parser = Parser::new();
     let mut request = [0; MAX_FRAME];
     let mut response = [0; MAX_FRAME];
+    let status_queue = StatusQueue::ready();
 
     loop {
         let received = match i2c.read_packet_async(&mut request).await {
@@ -104,7 +105,7 @@ async fn main(_spawner: Spawner) -> ! {
             }
         }
         if let Some(request) = parsed {
-            let length = dispatch(&request, &mut response);
+            let length = dispatch(&request, &status_queue, &mut response);
             let _ = i2c.write_packet_async(&response[..length]).await;
         }
     }

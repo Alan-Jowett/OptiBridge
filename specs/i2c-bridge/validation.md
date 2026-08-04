@@ -53,14 +53,14 @@ Use the known SHT40 address `0x44`.
 
 The final six bytes are the SHT40 measurement and CRC bytes.
 
-### OptiBridge alive transaction
+### OptiBridge Read Status transaction
 
 With the target at I2C address `0x42`:
 
 1. Send bridge write frame:
 
    ```text
-   A5 10 06 01 00 42 A5 01 00 01 00
+   A5 10 06 01 00 42 A5 06 00 01 00
    ```
 
 2. Expect:
@@ -78,10 +78,10 @@ With the target at I2C address `0x42`:
 4. Expect:
 
    ```text
-   A5 00 0A 02 00 A5 00 05 01 00 61 6C 69 76 65
+   A5 00 0A 02 00 A5 00 05 01 00 72 65 61 64 79
    ```
 
-The embedded target response decodes to `alive`.
+The embedded target response decodes to `ready`.
 
 ### I2C waveform capture
 
@@ -99,8 +99,9 @@ Interpretation:
 ## Existing evidence
 
 - **KNOWN:** SHT40 write/read at `0x44` completed successfully through COM9.
-- **KNOWN:** OptiBridge `alive` write/read at `0x42` completed successfully
-  through COM9.
+- **KNOWN:** The prior OptiBridge `alive` write/read at `0x42` completed
+  successfully through COM9; Read Status requires the updated hardware
+  validation above.
 - **KNOWN:** The PicoScope 2204A procedure is documented and verified with legacy
   `ps2000.dll`.
 
