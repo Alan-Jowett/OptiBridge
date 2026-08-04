@@ -99,6 +99,25 @@ Malformed frames, unsupported commands, and failed I2C operations return a
 nonzero status response. `cargo xtask size` fails when either release image's
 flash sections exceed 32 KiB.
 
+### BPF interpreter footprint
+
+OptiBridge consumes the upstream
+[`sonde-bpf`](https://github.com/Alan-Jowett/sonde/tree/main/crates/sonde-bpf)
+crate at pinned revision `cacc8edfbd59c09d9425aa6b93939c7bf85ff8d5`, with
+default features disabled. The firmware runs a bounded two-instruction,
+allocation-free startup probe so release linking retains the interpreter for
+size measurement.
+
+| Image configuration | Flash |
+| --- | ---: |
+| I2C slave baseline | 8,078 bytes |
+| With retained `sonde-bpf` interpreter | 21,756 bytes |
+| Interpreter increment | 13,678 bytes |
+| Remaining within 32 KiB | 11,012 bytes |
+
+This probe does not implement BPF loading, helpers, maps, or optical runtime
+execution.
+
 ## Project Status
 
 OptiBridge is under active development. This README describes the intended

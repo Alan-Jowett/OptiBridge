@@ -19,6 +19,10 @@ const AFIO_PCFR1: *mut u32 = 0x4001_0004 as *mut u32;
 const PB6_MODE_SHIFT: u32 = 24;
 const PB7_MODE_SHIFT: u32 = 28;
 const GPIO_ALT_OPEN_DRAIN_50MHZ: u32 = 0xF;
+const BPF_SIZE_PROBE: [u8; 16] = [
+    0xb7, 0x00, 0x00, 0x00, 0x2a, 0x00, 0x00, 0x00, // mov64 r0, 42
+    0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
+];
 
 fn configure_i2c_pins() {
     unsafe {
@@ -33,6 +37,22 @@ fn configure_i2c_pins() {
     }
 }
 
+#[inline(never)]
+fn run_bpf_size_probe() {
+    let helpers: &[sonde_bpf::interpreter::HelperDescriptor] = &[];
+    let mut context = [0; 1];
+    let result = sonde_bpf::interpreter::execute_program_no_maps(
+        core::hint::black_box(&BPF_SIZE_PROBE),
+        core::hint::black_box(&mut context),
+        core::hint::black_box(helpers),
+        false,
+        core::hint::black_box(2),
+    );
+    if !matches!(core::hint::black_box(result), Ok(42)) {
+        panic!();
+    }
+}
+
 #[panic_handler]
 fn panic(_info: &PanicInfo<'_>) -> ! {
     loop {
@@ -42,6 +62,8 @@ fn panic(_info: &PanicInfo<'_>) -> ! {
 
 #[embassy_executor::main(entry = "riscv_rt::entry")]
 async fn main(_spawner: Spawner) -> ! {
+    run_bpf_size_probe();
+
     let rcc = RCC::new(DRV_RCC_RUNTIME_RESOURCES).unwrap();
     rcc.configure_usb_fsdev_clock_48mhz().unwrap();
     wch::init_embassy_time_runtime().unwrap();

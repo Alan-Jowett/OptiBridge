@@ -23,3 +23,4 @@ ch32v203g6u6-embassy-hal = { package = "ch32v203g6u6-embassy-hal", path = "../..
 embassy-executor = { version = "0.7.0", features = ["arch-spin", "executor-thread"] }
 riscv = { version = "0.12", features = ["critical-section-single-hart"] }
 riscv-rt = "0.13"
+sonde-bpf = { git = "https://github.com/Alan-Jowett/sonde.git", rev = "cacc8edfbd59c09d9425aa6b93939c7bf85ff8d5", default-features = false }
