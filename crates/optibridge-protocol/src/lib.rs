@@ -123,6 +123,28 @@ pub fn encode_response(
     Ok(HEADER_LEN + payload.len())
 }
 
+pub fn validate_i2c_request(request: &Request) -> Result<(), u8> {
+    if request.flags != 0 {
+        return Err(STATUS_BAD_FLAGS);
+    }
+    if request.command != CMD_I2C_WRITE && request.command != CMD_I2C_READ {
+        return Err(STATUS_BAD_COMMAND);
+    }
+    let payload_len = request.payload_len as usize;
+    if payload_len == 0 || payload_len > MAX_PAYLOAD {
+        return Err(STATUS_BAD_LENGTH);
+    }
+    if request.payload[0] & 0x80 != 0 {
+        return Err(STATUS_BAD_COMMAND);
+    }
+    if request.command == CMD_I2C_READ
+        && (payload_len != 2 || request.payload[1] as usize > MAX_PAYLOAD)
+    {
+        return Err(STATUS_BAD_LENGTH);
+    }
+    Ok(())
+}
+
 pub fn dispatch(request: &Request, output: &mut [u8; MAX_FRAME]) -> usize {
     if request.flags != 0 {
         return encode_response(STATUS_BAD_FLAGS, request.sequence, 0, &[], output)
@@ -190,6 +212,111 @@ mod tests {
             assert_eq!(parser.push(*byte), Ok(None));
         }
         assert!(parser.push(bytes[HEADER_LEN - 1]).unwrap().is_some());
+    }
+
+    #[test]
+    fn parses_frame_fragmented_at_each_byte_boundary() {
+        let bytes = request_bytes(3, &[1, 2, 3]);
+        let mut parser = Parser::new();
+
+        for byte in bytes.iter().take(HEADER_LEN + 3 - 1) {
+            assert_eq!(parser.push(*byte), Ok(None));
+        }
+
+        assert_eq!(
+            parser.push(bytes[HEADER_LEN + 3 - 1]),
+            Ok(Some(Request {
+                command: CMD_ALIVE,
+                sequence: 3,
+                flags: 0,
+                payload: [1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                payload_len: 3,
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_coalesced_maximum_length_frames_in_order() {
+        let mut bytes = [0; MAX_FRAME * 3];
+        for (index, frame) in bytes.chunks_exact_mut(MAX_FRAME).enumerate() {
+            frame[0] = MAGIC;
+            frame[1] = CMD_ALIVE;
+            frame[2] = MAX_PAYLOAD as u8;
+            frame[3] = index as u8 + 1;
+            for payload in &mut frame[HEADER_LEN..] {
+                *payload = index as u8;
+            }
+        }
+
+        let mut parser = Parser::new();
+        let mut sequences = [0; 3];
+        let mut count = 0;
+        for byte in bytes {
+            if let Some(request) = parser.push(byte).unwrap() {
+                sequences[count] = request.sequence;
+                count += 1;
+            }
+        }
+
+        assert_eq!(count, 3);
+        assert_eq!(sequences, [1, 2, 3]);
+    }
+
+    #[test]
+    fn recovers_from_invalid_length_within_same_stream() {
+        let mut parser = Parser::new();
+        let malformed = [MAGIC, CMD_ALIVE, MAX_PAYLOAD as u8 + 1, 9, 0];
+        for byte in &malformed[..HEADER_LEN - 1] {
+            assert_eq!(parser.push(*byte), Ok(None));
+        }
+        assert_eq!(
+            parser.push(malformed[HEADER_LEN - 1]),
+            Err(ParseError::BadLength)
+        );
+
+        let bytes = request_bytes(4, &[]);
+        let mut result = None;
+        for byte in bytes.iter().take(HEADER_LEN) {
+            result = parser.push(*byte).unwrap();
+        }
+        assert_eq!(result.map(|request| request.sequence), Some(4));
+    }
+
+    #[test]
+    fn validates_i2c_request_statuses() {
+        let mut request = Request::empty();
+        request.command = CMD_I2C_WRITE;
+        request.payload_len = 1;
+        request.payload[0] = 0x42;
+        assert_eq!(validate_i2c_request(&request), Ok(()));
+
+        request.flags = 1;
+        assert_eq!(validate_i2c_request(&request), Err(STATUS_BAD_FLAGS));
+        request.flags = 0;
+
+        request.command = CMD_ALIVE;
+        assert_eq!(validate_i2c_request(&request), Err(STATUS_BAD_COMMAND));
+        request.command = CMD_I2C_WRITE;
+
+        request.payload_len = 0;
+        assert_eq!(validate_i2c_request(&request), Err(STATUS_BAD_LENGTH));
+        request.payload_len = 1;
+
+        request.payload_len = MAX_PAYLOAD as u8 + 1;
+        assert_eq!(validate_i2c_request(&request), Err(STATUS_BAD_LENGTH));
+        request.payload_len = 1;
+
+        request.payload[0] = 0x80;
+        assert_eq!(validate_i2c_request(&request), Err(STATUS_BAD_COMMAND));
+        request.payload[0] = 0x42;
+
+        request.command = CMD_I2C_READ;
+        assert_eq!(validate_i2c_request(&request), Err(STATUS_BAD_LENGTH));
+        request.payload_len = 2;
+        request.payload[1] = MAX_PAYLOAD as u8 + 1;
+        assert_eq!(validate_i2c_request(&request), Err(STATUS_BAD_LENGTH));
+        request.payload[1] = MAX_PAYLOAD as u8;
+        assert_eq!(validate_i2c_request(&request), Ok(()));
     }
 
     #[test]

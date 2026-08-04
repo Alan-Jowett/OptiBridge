@@ -18,8 +18,8 @@ use embassy_usb::{
     class::cdc_acm::{CdcAcmClass, State as CdcState},
 };
 use optibridge_protocol::{
-    CMD_I2C_READ, CMD_I2C_WRITE, MAX_FRAME, Parser, Request, STATUS_BAD_COMMAND, STATUS_BAD_FLAGS,
-    STATUS_BAD_LENGTH, STATUS_OK, encode_response,
+    CMD_I2C_READ, CMD_I2C_WRITE, MAX_FRAME, Parser, Request, STATUS_BAD_COMMAND, STATUS_BAD_LENGTH,
+    STATUS_OK, encode_response, validate_i2c_request,
 };
 
 static mut CONFIG_DESCRIPTOR: [u8; 256] = [0; 256];
@@ -113,18 +113,19 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(usb_task(usb)).unwrap();
 
     let mut parser = Parser::new();
-    let mut input = [0; MAX_FRAME];
+    let mut input = [0; 64];
     let mut output = [0; MAX_FRAME];
     let mut i2c_read = [0; 16];
 
     loop {
         cdc.wait_connection().await;
         if cdc.write_packet(b"READY\r\n").await.is_err() {
-            continue;
+            reset_mcu();
         }
         while !cdc.dtr() {
             Timer::after_millis(DTR_POLL_MS).await;
         }
+        parser.reset();
         while cdc.dtr() {
             let received = match select(
                 cdc.read_packet(&mut input),
@@ -133,24 +134,21 @@ async fn main(spawner: Spawner) -> ! {
             .await
             {
                 Either::First(Ok(length)) => length,
-                Either::First(Err(_)) => break,
+                Either::First(Err(_)) => reset_mcu(),
                 Either::Second(()) => continue,
             };
-            parser.reset();
-            let mut request = None;
             for byte in input[..received].iter().copied() {
                 match parser.push(byte) {
-                    Ok(Some(value)) => request = Some(value),
-                    Ok(None) => {}
-                    Err(_) => {
-                        parser.reset();
-                        break;
+                    Ok(Some(request)) => {
+                        let length =
+                            handle_request(&i2c, &cdc, request, &mut i2c_read, &mut output).await;
+                        if cdc.write_packet(&output[..length]).await.is_err() {
+                            reset_mcu();
+                        }
                     }
+                    Ok(None) => {}
+                    Err(_) => parser.reset(),
                 }
-            }
-            let length = handle_request(&i2c, &cdc, request, &mut i2c_read, &mut output).await;
-            if cdc.write_packet(&output[..length]).await.is_err() {
-                break;
             }
         }
 
@@ -170,20 +168,14 @@ async fn reset_on_dtr_drop(cdc: &CdcAcmClass<'static, USBDUsbDriver>) {
 async fn handle_request(
     i2c: &I2C1,
     cdc: &CdcAcmClass<'static, USBDUsbDriver>,
-    request: Option<Request>,
+    request: Request,
     read_buffer: &mut [u8; 16],
     output: &mut [u8; MAX_FRAME],
 ) -> usize {
-    let Some(request) = request else {
-        return encode_response(STATUS_BAD_LENGTH, 0, 0, &[], output).unwrap_or(5);
-    };
-    if request.flags != 0 {
-        return encode_response(STATUS_BAD_FLAGS, request.sequence, 0, &[], output).unwrap_or(5);
+    if let Err(status) = validate_i2c_request(&request) {
+        return encode_response(status, request.sequence, 0, &[], output).unwrap_or(5);
     }
     let length = request.payload_len as usize;
-    if length == 0 {
-        return encode_response(STATUS_BAD_LENGTH, request.sequence, 0, &[], output).unwrap_or(5);
-    }
     let address = request.payload[0];
     match request.command {
         CMD_I2C_WRITE => {
@@ -225,11 +217,16 @@ async fn handle_request(
             } else {
                 STATUS_BAD_COMMAND
             };
-            encode_response(status, request.sequence, 0, &read_buffer[..count], output).unwrap_or(5)
+            let payload = if result.is_ok() {
+                &read_buffer[..count]
+            } else {
+                &[]
+            };
+            encode_response(status, request.sequence, 0, payload, output).unwrap_or(5)
         }
         CMD_I2C_READ => {
             encode_response(STATUS_BAD_LENGTH, request.sequence, 0, &[], output).unwrap_or(5)
         }
-        _ => encode_response(STATUS_BAD_COMMAND, request.sequence, 0, &[], output).unwrap_or(5),
+        _ => unreachable!(),
     }
 }
