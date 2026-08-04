@@ -84,7 +84,7 @@ assuming a large buffer.
 ## Expected bridge transaction
 
 The bridge protocol uses compact binary frames with magic byte `0xA5`.
-To query the optibridge, the bridge must perform two I2C operations:
+To query the OptiBridge, the bridge must perform two I2C operations:
 
 1. Write the alive request to address `0x42`:
 
