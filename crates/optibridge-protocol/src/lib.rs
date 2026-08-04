@@ -335,4 +335,35 @@ mod tests {
             &[MAGIC, STATUS_OK, 5, 9, 0, b'a', b'l', b'i', b'v', b'e']
         );
     }
+
+    #[test]
+    fn dispatches_alive_request_errors() {
+        let mut request = Request::empty();
+        request.command = CMD_ALIVE;
+        request.sequence = 1;
+
+        request.flags = 1;
+        let mut output = [0; MAX_FRAME];
+        let length = dispatch(&request, &mut output);
+        assert_eq!(
+            &output[..length],
+            &[MAGIC, STATUS_BAD_FLAGS, 0, request.sequence, 0]
+        );
+
+        request.flags = 0;
+        request.command = 0x02;
+        let length = dispatch(&request, &mut output);
+        assert_eq!(
+            &output[..length],
+            &[MAGIC, STATUS_BAD_COMMAND, 0, request.sequence, 0]
+        );
+
+        request.command = CMD_ALIVE;
+        request.payload_len = 1;
+        let length = dispatch(&request, &mut output);
+        assert_eq!(
+            &output[..length],
+            &[MAGIC, STATUS_BAD_LENGTH, 0, request.sequence, 0]
+        );
+    }
 }
