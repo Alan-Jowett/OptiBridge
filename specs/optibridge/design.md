@@ -6,7 +6,7 @@
 | --- | --- |
 | Startup | Runs the Sonde size probe, initializes status storage to `ready`, and initializes clock, time, GPIO, and I2C slave resources. |
 | Pin configuration | Selects I2C1 default routing and configures PB6/PB7 as released alternate-function open-drain pins. |
-| I2C slave loop | Receives one I2C packet, packet-scoped parses it, dispatches at most one request, and writes a response. |
+| I2C ISR dispatch | Receives one bounded packet, dispatches at most one request, and replaces the single response slot. |
 | Shared protocol | Defines action commands/statuses and dispatches bounded action requests. |
 | Status storage | Holds one newest status message, initially `ready`; reads consume it. |
 | Sonde probe | Retains the external no-std interpreter and validates a fixed `mov r0, 42; exit` program. |
@@ -22,29 +22,44 @@
    as 50 MHz alternate-function open-drain.
 7. Enable and release-reset I2C1 slave resources.
 8. Initialize I2C1 slave mode and set own address `0x42`.
-9. Enter the receive loop.
+9. Register the I2C RX-packet ISR dispatcher with its static 21-byte receive
+   buffer.
+10. Enter the idle loop while I2C interrupts process packets.
 
 USB is not otherwise used by this firmware; its clock configuration is current
 startup behavior.
 
-## I2C receive state machine
+## I2C ISR state machine
 
 ```text
 startup
-  -> read I2C packet
-  -> receive error: reset parser, read I2C packet
-  -> reset parser
-  -> parse packet bytes
-  -> no complete frame / parser error: read I2C packet
-  -> dispatch last complete frame
-  -> write response (ignore result)
-  -> read I2C packet
+  -> enable RX packet ISR dispatch
+  -> receive completed packet
+  -> packet is truncated: queue empty packet
+  -> packet-local parse
+  -> incomplete or malformed: queue empty packet
+  -> dispatch final complete frame
+  -> queue bounded response
+  -> remain armed for next master write
 ```
 
-The parser resets before packet parsing. Each complete frame replaces the
-previous candidate; therefore the final complete frame in one packet is the
-only one dispatched. A parser error resets the parser and stops processing the
-remainder of that packet.
+`dispatch_packet` is a shared, target-independent helper. It creates
+packet-local parser state and returns `PacketOutcome::Response(length)` or
+`PacketOutcome::Empty`. A truncated packet returns `Empty` before parsing.
+Each complete frame replaces the previous candidate; therefore only the final
+complete frame in a non-truncated packet is dispatched. Packets over the
+21-byte receive bound are truncated and do not dispatch any captured prefix.
+
+The generated callback is a bare function pointer. Callback-visible status and
+response state is stored in a `critical_section::Mutex<RefCell<...>>` static;
+the callback takes a bounded response snapshot, releases that state, then
+queues exactly one packet. `Response` queues its frame and `Empty` queues
+`&[]`, actively replacing an unread response.
+
+The generated response mechanism is one 32-byte overwrite slot, not a FIFO.
+Masters must use write/read ordering. A later valid write replaces an unread
+response. An empty slot may yield zero filler on a later read; those bytes are
+outside the shared frame protocol.
 
 ## Action dispatch
 
@@ -77,9 +92,12 @@ capacity, and overflow behavior.
 ## Failure behavior
 
 The panic handler spins indefinitely. Startup `unwrap` failures and Sonde
-probe mismatch reach this handler. Receive errors clear parser state; response
-write errors are discarded. No timeout, retry, I2C bus recovery, actual reset,
-or other recovery mechanism is implemented.
+probe mismatch reach this handler. Every completed packet replaces the response
+slot, including rejected packets that queue an empty response. Low-level bus
+errors that abort before packet completion are an accepted deferred gap: they
+do not enter the callback and can leave an unread generated response slot
+unchanged. No timeout, retry, I2C bus recovery, actual reset, or other recovery
+mechanism is implemented.
 
 ## Resource model
 
@@ -92,7 +110,7 @@ the pinned external `sonde-bpf` dependency.
 | Design element | Requirements |
 | --- | --- |
 | Platform and startup | REQ-OPT-FW-001, REQ-OPT-FW-002, REQ-OPT-FW-007 |
-| Packet parser state machine | REQ-OPT-FW-003, REQ-OPT-FW-004, REQ-OPT-FW-006 |
+| I2C ISR state machine | REQ-OPT-FW-003, REQ-OPT-FW-004, REQ-OPT-FW-006, REQ-OPT-FW-009 to REQ-OPT-FW-013 |
 | Action dispatch | REQ-OPT-FW-005, REQ-OPT-ACT-001, REQ-OPT-ACT-003, REQ-OPT-ACT-004, REQ-OPT-ACT-005, REQ-OPT-ACT-006 |
 | Status storage | REQ-OPT-ACT-002, REQ-OPT-ACT-003, REQ-OPT-ACT-007 |
 | Resource model | REQ-OPT-FW-008 |

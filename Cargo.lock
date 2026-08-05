@@ -377,6 +377,7 @@ name = "optibridge-firmware"
 version = "0.1.0"
 dependencies = [
  "ch32v203g6u6-embassy-hal",
+ "critical-section",
  "embassy-executor",
  "optibridge-protocol",
  "riscv",
