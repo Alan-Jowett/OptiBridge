@@ -232,6 +232,9 @@ pub fn dispatch_packet(
             Err(_) => return PacketOutcome::Empty,
         }
     }
+    if parser.length != 0 {
+        return PacketOutcome::Empty;
+    }
 
     match request {
         Some(request) => PacketOutcome::Response(dispatch(&request, status_queue, output)),
@@ -533,6 +536,36 @@ mod tests {
         assert_eq!(
             dispatch_packet(
                 &request_bytes(4, &[])[..HEADER_LEN],
+                false,
+                &mut status_queue,
+                &mut output,
+            ),
+            PacketOutcome::Response(10)
+        );
+    }
+
+    #[test]
+    fn dispatch_packet_rejects_trailing_partial_frames() {
+        let complete = request_bytes(5, &[]);
+        let packet = [
+            complete[0],
+            complete[1],
+            complete[2],
+            complete[3],
+            complete[4],
+            MAGIC,
+            CMD_READ_STATUS,
+        ];
+        let mut status_queue = StatusQueue::ready();
+        let mut output = [0; MAX_FRAME];
+
+        assert_eq!(
+            dispatch_packet(&packet, false, &mut status_queue, &mut output),
+            PacketOutcome::Empty
+        );
+        assert_eq!(
+            dispatch_packet(
+                &request_bytes(6, &[])[..HEADER_LEN],
                 false,
                 &mut status_queue,
                 &mut output,
