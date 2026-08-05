@@ -1,16 +1,19 @@
 #![no_std]
 #![no_main]
 
-use core::panic::PanicInfo;
+use core::{cell::RefCell, panic::PanicInfo, ptr::addr_of_mut};
 
 use ch32v203g6u6_embassy_hal::{
     gpio::{DRV_GPIOB_RUNTIME_RESOURCES, GPIOB},
-    i2c::{DRV_I2C1_SLAVE_RUNTIME_RESOURCES, I2C1Slave},
+    i2c::{
+        DRV_I2C1_SLAVE_RUNTIME_RESOURCES, I2C1Slave, queue_drv_i2c1_slave_i2c_slave_isr_tx_packet,
+    },
     rcc::{DRV_RCC_RUNTIME_RESOURCES, RCC},
     wch,
 };
+use critical_section::Mutex;
 use embassy_executor::Spawner;
-use optibridge_protocol::{MAX_FRAME, Parser, StatusQueue, dispatch};
+use optibridge_protocol::{MAX_FRAME, PacketOutcome, StatusQueue, dispatch_packet};
 
 const GPIOB_CFGLR: *mut u32 = 0x4001_0c00 as *mut u32;
 const GPIOB_BSHR: *mut u32 = 0x4001_0c10 as *mut u32;
@@ -23,6 +26,24 @@ const BPF_SIZE_PROBE: [u8; 16] = [
     0xb7, 0x00, 0x00, 0x00, 0x2a, 0x00, 0x00, 0x00, // mov64 r0, 42
     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
 ];
+
+struct ProtocolState {
+    status_queue: StatusQueue,
+    response: [u8; MAX_FRAME],
+}
+
+impl ProtocolState {
+    const fn new() -> Self {
+        Self {
+            status_queue: StatusQueue::ready(),
+            response: [0; MAX_FRAME],
+        }
+    }
+}
+
+static PROTOCOL_STATE: Mutex<RefCell<ProtocolState>> =
+    Mutex::new(RefCell::new(ProtocolState::new()));
+static mut I2C_RX_BUFFER: [u8; MAX_FRAME] = [0; MAX_FRAME];
 
 fn configure_i2c_pins() {
     unsafe {
@@ -60,6 +81,27 @@ fn panic(_info: &PanicInfo<'_>) -> ! {
     }
 }
 
+fn on_i2c_packet(packet: &[u8], truncated: bool) {
+    let mut snapshot = [0; MAX_FRAME];
+    let response_length = critical_section::with(|cs| {
+        let mut state = PROTOCOL_STATE.borrow(cs).borrow_mut();
+        let ProtocolState {
+            status_queue,
+            response,
+        } = &mut *state;
+        match dispatch_packet(packet, truncated, status_queue, response) {
+            PacketOutcome::Response(length) => {
+                snapshot[..length].copy_from_slice(&state.response[..length]);
+                Some(length)
+            }
+            PacketOutcome::Empty => None,
+        }
+    });
+
+    let response = response_length.map_or(&[][..], |length| &snapshot[..length]);
+    let _ = queue_drv_i2c1_slave_i2c_slave_isr_tx_packet(response);
+}
+
 #[embassy_executor::main(entry = "riscv_rt::entry")]
 async fn main(_spawner: Spawner) -> ! {
     run_bpf_size_probe();
@@ -78,35 +120,10 @@ async fn main(_spawner: Spawner) -> ! {
     i2c.release_reset().unwrap();
     i2c.init_slave().unwrap();
     i2c.set_own_address_7bit(0x42).unwrap();
-
-    let mut parser = Parser::new();
-    let mut request = [0; MAX_FRAME];
-    let mut response = [0; MAX_FRAME];
-    let mut status_queue = StatusQueue::ready();
+    i2c.enable_rx_packet_isr_dispatch(unsafe { &mut *addr_of_mut!(I2C_RX_BUFFER) }, on_i2c_packet)
+        .unwrap();
 
     loop {
-        let received = match i2c.read_packet_async(&mut request).await {
-            Ok(length) => length,
-            Err(_) => {
-                parser.reset();
-                continue;
-            }
-        };
-        parser.reset();
-        let mut parsed = None;
-        for byte in request[..received].iter().copied() {
-            match parser.push(byte) {
-                Ok(Some(value)) => parsed = Some(value),
-                Ok(None) => {}
-                Err(_) => {
-                    parser.reset();
-                    break;
-                }
-            }
-        }
-        if let Some(request) = parsed {
-            let length = dispatch(&request, &mut status_queue, &mut response);
-            let _ = i2c.write_packet_async(&response[..length]).await;
-        }
+        core::hint::spin_loop();
     }
 }

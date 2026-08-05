@@ -207,6 +207,41 @@ pub fn dispatch(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PacketOutcome {
+    Response(usize),
+    Empty,
+}
+
+pub fn dispatch_packet(
+    packet: &[u8],
+    truncated: bool,
+    status_queue: &mut StatusQueue,
+    output: &mut [u8; MAX_FRAME],
+) -> PacketOutcome {
+    if truncated {
+        return PacketOutcome::Empty;
+    }
+
+    let mut parser = Parser::new();
+    let mut request = None;
+    for byte in packet {
+        match parser.push(*byte) {
+            Ok(Some(value)) => request = Some(value),
+            Ok(None) => {}
+            Err(_) => return PacketOutcome::Empty,
+        }
+    }
+    if parser.length != 0 {
+        return PacketOutcome::Empty;
+    }
+
+    match request {
+        Some(request) => PacketOutcome::Response(dispatch(&request, status_queue, output)),
+        None => PacketOutcome::Empty,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,5 +499,125 @@ mod tests {
         request.sequence = 2;
         let second_length = dispatch(&request, &mut status_queue, &mut output);
         assert_eq!(&output[..second_length], &[MAGIC, STATUS_OK, 0, 2, 0]);
+    }
+
+    #[test]
+    fn dispatch_packet_uses_only_the_final_complete_frame() {
+        let mut packet = [0; HEADER_LEN * 2];
+        packet[..HEADER_LEN].copy_from_slice(&request_bytes(1, &[])[..HEADER_LEN]);
+        packet[HEADER_LEN..].copy_from_slice(&request_bytes(2, &[])[..HEADER_LEN]);
+        let mut status_queue = StatusQueue::ready();
+        let mut output = [0; MAX_FRAME];
+
+        let outcome = dispatch_packet(&packet, false, &mut status_queue, &mut output);
+
+        assert_eq!(outcome, PacketOutcome::Response(10));
+        assert_eq!(
+            &output[..10],
+            &[MAGIC, STATUS_OK, 5, 2, 0, b'r', b'e', b'a', b'd', b'y']
+        );
+    }
+
+    #[test]
+    fn dispatch_packet_rejects_incomplete_and_malformed_packets() {
+        let incomplete = [MAGIC, CMD_READ_STATUS];
+        let malformed = [MAGIC, CMD_READ_STATUS, MAX_PAYLOAD as u8 + 1, 3, 0];
+        let mut status_queue = StatusQueue::ready();
+        let mut output = [0; MAX_FRAME];
+
+        assert_eq!(
+            dispatch_packet(&incomplete, false, &mut status_queue, &mut output),
+            PacketOutcome::Empty
+        );
+        assert_eq!(
+            dispatch_packet(&malformed, false, &mut status_queue, &mut output),
+            PacketOutcome::Empty
+        );
+        assert_eq!(
+            dispatch_packet(
+                &request_bytes(4, &[])[..HEADER_LEN],
+                false,
+                &mut status_queue,
+                &mut output,
+            ),
+            PacketOutcome::Response(10)
+        );
+    }
+
+    #[test]
+    fn dispatch_packet_rejects_trailing_partial_frames() {
+        let complete = request_bytes(5, &[]);
+        let packet = [
+            complete[0],
+            complete[1],
+            complete[2],
+            complete[3],
+            complete[4],
+            MAGIC,
+            CMD_READ_STATUS,
+        ];
+        let mut status_queue = StatusQueue::ready();
+        let mut output = [0; MAX_FRAME];
+
+        assert_eq!(
+            dispatch_packet(&packet, false, &mut status_queue, &mut output),
+            PacketOutcome::Empty
+        );
+        assert_eq!(
+            dispatch_packet(
+                &request_bytes(6, &[])[..HEADER_LEN],
+                false,
+                &mut status_queue,
+                &mut output,
+            ),
+            PacketOutcome::Response(10)
+        );
+    }
+
+    #[test]
+    fn dispatch_packet_rejects_truncated_valid_prefixes() {
+        let request = request_bytes(5, &[]);
+        let mut status_queue = StatusQueue::ready();
+        let mut output = [0; MAX_FRAME];
+
+        assert_eq!(
+            dispatch_packet(&request[..HEADER_LEN], true, &mut status_queue, &mut output,),
+            PacketOutcome::Empty
+        );
+        assert_eq!(
+            dispatch_packet(
+                &request[..HEADER_LEN],
+                false,
+                &mut status_queue,
+                &mut output,
+            ),
+            PacketOutcome::Response(10)
+        );
+    }
+
+    #[test]
+    fn dispatch_packet_does_not_pop_status_for_invalid_requests() {
+        let invalid = [MAGIC, CMD_READ_STATUS, 0, 6, 1];
+        let mut status_queue = StatusQueue::ready();
+        let mut output = [0; MAX_FRAME];
+
+        assert_eq!(
+            dispatch_packet(&invalid, false, &mut status_queue, &mut output),
+            PacketOutcome::Response(5)
+        );
+        assert_eq!(&output[..5], &[MAGIC, STATUS_BAD_FLAGS, 0, 6, 0]);
+        assert_eq!(
+            dispatch_packet(
+                &request_bytes(7, &[])[..HEADER_LEN],
+                false,
+                &mut status_queue,
+                &mut output,
+            ),
+            PacketOutcome::Response(10)
+        );
+        assert_eq!(
+            &output[..10],
+            &[MAGIC, STATUS_OK, 5, 7, 0, b'r', b'e', b'a', b'd', b'y']
+        );
     }
 }

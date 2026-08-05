@@ -29,20 +29,18 @@ The firmware **MUST** configure I2C1 as a slave with own seven-bit address
 
 ### REQ-OPT-FW-003: Packet-scoped request parsing
 
-The firmware **MUST** reset shared-frame parser state before processing each
-successful I2C receive packet and after an I2C receive error. It **MUST NOT**
-carry a partial frame from one received I2C packet to a later packet.
+The firmware **MUST** process each completed I2C receive capture independently.
+It **MUST NOT** carry a partial frame from one capture to a later capture.
 
-An incomplete frame produces no response.
+An incomplete capture **MUST** replace the response slot with an empty packet.
 
 ### REQ-OPT-FW-004: Multiple frames and malformed input
 
-When one I2C receive packet contains multiple complete valid frames, the
-firmware **MUST** dispatch only the last complete frame.
+When one non-truncated I2C receive capture contains multiple complete valid
+frames, the firmware **MUST** dispatch only the last complete frame.
 
-On a parser error, the firmware **MUST** reset parser state, abandon the
-remaining bytes of that I2C receive packet, and produce no response for that
-packet.
+On a parser error or a truncated capture, the firmware **MUST** abandon the
+remaining bytes and replace the response slot with an empty packet.
 
 ### REQ-OPT-FW-005: Shared frame format
 
@@ -62,9 +60,14 @@ to zero.
 
 ### REQ-OPT-FW-006: I2C error behavior
 
-An I2C receive error **MUST** clear parser state and return to the receive
-loop. An I2C response-write error **MUST** be ignored; the implementation
-continues to the next receive operation.
+For every completed I2C receive capture, the firmware **MUST** replace the
+single response slot with either one bounded protocol response or an empty
+packet. A completed malformed, incomplete, or truncated capture **MUST** use
+an empty packet.
+
+Low-level I2C bus-error paths that do not deliver a completed capture are
+deferred; this change **MUST NOT** introduce bus recovery or a response-slot
+clear API outside the generated HAL.
 
 ### REQ-OPT-FW-007: Sonde size probe
 
@@ -77,6 +80,40 @@ runtime feature.
 
 The firmware **MUST** be `no_std` and allocation-free. Its release `text +
 data` flash use **MUST NOT** exceed 32,768 bytes.
+
+### REQ-OPT-FW-009: Repeated transaction availability
+
+After startup, the I2C slave **MUST** accept consecutive master
+write/read-response cycles at address `0x42` without an OptiBridge reset.
+After a master terminates a response read with STOP or NACK, the slave **MUST**
+remain available for the next write.
+
+### REQ-OPT-FW-010: Bounded ISR dispatch
+
+The firmware **MUST** register the generated I2C RX-packet ISR dispatcher with
+a static receive buffer of `MAX_FRAME` bytes. Its callback **MUST NOT**
+allocate, await, or use unbounded storage. Responses **MUST NOT** exceed
+`MAX_FRAME`, which fits within the generated 32-byte single response slot.
+
+### REQ-OPT-FW-011: Dispatch ordering
+
+For a valid Read Status capture, the firmware **MUST** consume the stored
+status before queuing the response. Invalid requests **MUST NOT** consume the
+stored status.
+
+### REQ-OPT-FW-012: Empty response behavior
+
+An empty response slot is not a protocol response. A master read after an
+empty packet **MUST NOT** be interpreted as a shared frame; the generated HAL
+may transmit zero filler bytes.
+
+### REQ-OPT-FW-013: Single-slot response ordering
+
+The I2C master **MUST** complete its response-read transaction before writing
+the next OptiBridge command. The firmware **MUST** maintain at most one queued
+response. If a later valid command arrives before the prior response is read,
+the later response **MUST** replace the unread response. The firmware **MUST
+NOT** introduce a multi-entry response queue.
 
 ### REQ-OPT-ACT-001: Action command identifiers
 
