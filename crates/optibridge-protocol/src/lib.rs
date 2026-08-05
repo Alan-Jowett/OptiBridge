@@ -164,6 +164,10 @@ impl BpfLoader {
         }
     }
 
+    pub const fn has_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
     pub fn execute_pending<F: BpfFlash>(&mut self, flash: &mut F) {
         let Some(operation) = self.pending.take() else {
             return;
