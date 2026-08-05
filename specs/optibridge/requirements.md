@@ -3,8 +3,8 @@
 ## Scope
 
 This specification describes the CH32V203G6U6 OptiBridge firmware's bounded
-I2C action surface. It implements Reset, exposes four remaining action stubs,
-and exposes startup liveness through Read Status.
+I2C action surface. It implements Reset and Load BPF, exposes three remaining
+action stubs, and exposes startup liveness through Read Status.
 
 **KNOWN:** BPF execution, verification beyond the startup probe, map access,
 helpers, optical I/O, calibration, interrupts, and a general status-buffer API

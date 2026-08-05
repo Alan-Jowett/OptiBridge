@@ -32,6 +32,7 @@ const RCC_APB2PCENR: *mut u32 = 0x4002_1018 as *mut u32;
 const AFIO_PCFR1: *mut u32 = 0x4001_0004 as *mut u32;
 const I2C1_STAR2: *const u16 = 0x4000_5418 as *const u16;
 const I2C_STAR2_BUSY: u16 = 1 << 1;
+const I2C_BUS_IDLE_SPINS: u32 = 48_000;
 const PB6_MODE_SHIFT: u32 = 24;
 const PB7_MODE_SHIFT: u32 = 28;
 const GPIO_ALT_OPEN_DRAIN_50MHZ: u32 = 0xF;
@@ -93,10 +94,14 @@ fn configure_i2c_pins() {
     }
 }
 
-fn wait_for_i2c_bus_idle() {
-    while unsafe { I2C1_STAR2.read_volatile() } & I2C_STAR2_BUSY != 0 {
+fn wait_for_i2c_bus_idle() -> bool {
+    for _ in 0..I2C_BUS_IDLE_SPINS {
+        if unsafe { I2C1_STAR2.read_volatile() } & I2C_STAR2_BUSY == 0 {
+            return true;
+        }
         core::hint::spin_loop();
     }
+    false
 }
 
 #[inline(never)]
@@ -188,7 +193,9 @@ async fn main(_spawner: Spawner) -> ! {
             PROTOCOL_STATE.borrow(cs).borrow().loader.has_pending()
         });
         if load_pending {
-            wait_for_i2c_bus_idle();
+            if !wait_for_i2c_bus_idle() {
+                continue;
+            }
         }
         critical_section::with(|cs| {
             let mut state = PROTOCOL_STATE.borrow(cs).borrow_mut();
