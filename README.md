@@ -19,7 +19,7 @@ to keep the runtime portable across supported hardware implementations.
 
 ## BPF Runtime
 
-OptiBridge accepts a small BPF program of up to 1,024 BPF instructions. Programs
+OptiBridge accepts a small BPF program of up to 960 BPF instructions. Programs
 are loaded over multiple I2C write transactions, then started by the host.
 
 BPF programs can:
@@ -43,6 +43,8 @@ The I2C interface exposes a small command set:
 5. **Write BPF map state** - Update values in array-style maps.
 6. **Read status messages** - Retrieve diagnostic messages from the circular
    status buffer.
+7. **Query BPF CRC** - Check the identity of the committed flash-resident
+   program without executing it.
 
 The detailed command encoding, register layout, verifier rules, helper
 definitions, and execution semantics will be defined in the project
@@ -55,8 +57,10 @@ execution, verifies and runs BPF programs, maintains array-style maps, and
 bridges BPF helper calls to the optical hardware.
 
 It also owns reset handling and the circular status buffer used for diagnostics.
-Implementation details and resource limits beyond the 1,024-instruction program
-limit will be documented separately.
+The initial loader supports a 960-instruction image, up to eight array-map
+descriptors, and 1,024 bytes of aggregate map backing storage. Its detailed
+wire format, flash layout, and CRC behavior are specified in
+`specs/optibridge/`.
 
 ### Initial firmware workspace
 
@@ -83,16 +87,19 @@ The initial OptiBridge protocol is a compact binary frame:
 request/response: magic, command-or-status, payload-length, sequence, flags, payload
 ```
 
-The six action commands are Reset (`0x01`), Load BPF (`0x02`), Start BPF
+The seven action commands are Reset (`0x01`), Load BPF (`0x02`), Start BPF
 (`0x03`), Read BPF map (`0x04`), Write BPF map (`0x05`), and Read Status
-(`0x06`). Payloads are bounded to 16 bytes; reserved flags must be zero.
+(`0x06`), and Query BPF CRC (`0x07`). Payloads are bounded to 16 bytes;
+reserved flags must be zero.
 
 Reset is functional and immediately reboots the MCU. It is fire-and-forget:
 the master must not read a target response after a valid Reset request. Read
 Status removes and returns the newest startup status payload, initially
 `ready`. An empty status queue returns `STATUS_OK` with an empty payload. The
-remaining four actions return `STATUS_NOT_IMPLEMENTED`; they do not implement
-BPF, map, or optical behavior.
+Load BPF stages an image over multiple transactions into reserved flash and
+supports only BPF bytecode plus array-map definitions; it does not execute the
+program. Query BPF CRC reports the committed image identity. Start BPF, map
+read/write, and optical behavior remain `STATUS_NOT_IMPLEMENTED`.
 
 After Reset, a master must wait at least one second before sending another I2C
 request.

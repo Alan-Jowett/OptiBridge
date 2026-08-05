@@ -6,9 +6,10 @@ This specification describes the CH32V203G6U6 OptiBridge firmware's bounded
 I2C action surface. It implements Reset, exposes four remaining action stubs,
 and exposes startup liveness through Read Status.
 
-**KNOWN:** BPF loading, verification beyond the startup probe, maps, helpers,
-optical I/O, calibration, interrupts, and a general status-buffer API are not
-implemented and are out of scope.
+**KNOWN:** BPF execution, verification beyond the startup probe, map access,
+helpers, optical I/O, calibration, interrupts, and a general status-buffer API
+are not implemented and are out of scope. This specification adds only the
+flash-resident BPF image loader and image-CRC query surface.
 
 ## Requirements
 
@@ -88,6 +89,12 @@ runtime feature.
 The firmware **MUST** be `no_std` and allocation-free. Its release `text +
 data` flash use **MUST NOT** exceed 32,768 bytes.
 
+The firmware image **MUST** link entirely below flash offset `0x6000`, reserving
+`0x6000..=0x7fff` exclusively for BPF image storage. All static RAM, runtime
+stack, 1,024-byte map backing store, and Sonde interpreter execution stack
+**MUST** fit in the 10,240-byte RAM region. The final link image **MUST**
+reserve at least 4,096 bytes of stack for Sonde execution.
+
 ### REQ-OPT-FW-009: Repeated transaction availability
 
 After startup, the I2C slave **MUST** accept consecutive master
@@ -135,6 +142,7 @@ following action commands:
 | `CMD_READ_BPF_MAP` | `0x04` |
 | `CMD_WRITE_BPF_MAP` | `0x05` |
 | `CMD_READ_STATUS` | `0x06` |
+| `CMD_QUERY_BPF_CRC` | `0x07` |
 
 ### REQ-OPT-ACT-002: Status storage
 
@@ -153,15 +161,15 @@ The initial response payload **MUST** be ASCII `ready`.
 
 ### REQ-OPT-ACT-004: Stub request validation
 
-`CMD_LOAD_BPF`, `CMD_START_BPF`, `CMD_READ_BPF_MAP`, and `CMD_WRITE_BPF_MAP`
-**MUST** require zero flags and zero payload. Nonzero flags **MUST** return
-`STATUS_BAD_FLAGS`; a nonempty payload **MUST** return `STATUS_BAD_LENGTH`.
+`CMD_START_BPF`, `CMD_READ_BPF_MAP`, and `CMD_WRITE_BPF_MAP` **MUST** require
+zero flags and zero payload. Nonzero flags **MUST** return `STATUS_BAD_FLAGS`;
+a nonempty payload **MUST** return `STATUS_BAD_LENGTH`.
 
 ### REQ-OPT-ACT-005: Remaining stub behavior
 
-`CMD_LOAD_BPF`, `CMD_START_BPF`, `CMD_READ_BPF_MAP`, and `CMD_WRITE_BPF_MAP`
-**MUST NOT** mutate runtime state, load or execute BPF, access maps, or access
-optical hardware.
+`CMD_START_BPF`, `CMD_READ_BPF_MAP`, and `CMD_WRITE_BPF_MAP` **MUST NOT**
+mutate runtime state, load or execute BPF, access maps, or access optical
+hardware.
 
 They **MUST** return status-only `STATUS_NOT_IMPLEMENTED` (`0x04`) and retain
 the request sequence.
@@ -173,7 +181,7 @@ Commands outside the six defined action values **MUST** return status-only
 
 ### REQ-OPT-ACT-007: Deferred action semantics
 
-BPF loading/execution, map semantics, optical behavior, additional status
+BPF execution, map access semantics, optical behavior, additional status
 enqueue sources, and a general circular-status-buffer API **MUST NOT** be
 introduced by this change.
 
@@ -197,3 +205,114 @@ The firmware **MUST** use generated HAL `interrupt::system_reset()` rather
 than direct PFIC MMIO. After restart, it **MUST** restore I2C address `0x42`
 and the initial `ready` status. It **MUST NOT** add reset acknowledgments,
 delay-based reset handling, allocation, or a reset-recovery subsystem.
+
+### REQ-OPT-BPF-001: Reserved image storage
+
+The firmware **MUST** reserve the two 4,096-byte flash pages at offsets
+`0x6000..=0x7fff` for a single BPF image and **MUST NOT** link executable or
+read-only firmware data into that range. A valid image **MUST** have a
+16-byte header followed by canonical image bytes: bytecode first, then map
+descriptors in map-index order.
+
+The 16-byte header **MUST** encode `OBPF` magic at bytes `0..4`, format
+version `1` at byte `4`, map count at byte `5`, bytecode length as a
+little-endian `u16` at bytes `6..8`, CRC-32/ISO-HDLC as a little-endian `u32`
+at bytes `8..12`, commit marker as a little-endian `u16` at bytes `12..14`,
+and erased reserved bytes at `14..16`. CRC-32 **MUST** use polynomial
+`0x04C11DB7`, reflected input/output, initial value `0xFFFFFFFF`, and final
+XOR `0xFFFFFFFF`. The commit marker **MUST** be `0xFFFF` until all image bytes
+and the CRC have been validated, then be programmed to `0x0000` last.
+Firmware **MUST** treat an erased, malformed, or CRC-mismatched header as no
+image.
+
+### REQ-OPT-BPF-002: Image bounds and map definitions
+
+Bytecode **MUST** be nonempty, eight-byte aligned, and no more than 7,680
+bytes (960 BPF instructions). An image **MUST** define no more than eight
+maps. Each canonical map descriptor **MUST** be 16 little-endian bytes:
+`map_type`, `key_size`, `value_size`, and `max_entries`, each a `u32`.
+
+Only Sonde `BPF_MAP_TYPE_ARRAY` (`map_type = 1`) with `key_size = 4` **MUST**
+be accepted. Every definition **MUST** have nonzero `value_size` and
+`max_entries`; the checked sum of `value_size * max_entries` across all maps
+**MUST NOT** exceed 1,024 bytes. Definitions that overflow, exceed image
+storage, or violate these constraints **MUST** be rejected.
+
+### REQ-OPT-BPF-003: Load BPF command format
+
+`CMD_LOAD_BPF` **MUST** require zero request flags. Its first payload byte
+**MUST** select one of these operations:
+
+| Operation | Value | Payload after operation byte |
+| --- | ---: | --- |
+| Begin | `0x00` | bytecode length (`u16` little-endian), map count (`u8`), expected CRC-32 (`u32` little-endian) |
+| Data | `0x01` | canonical-image offset (`u16` little-endian), 2 through 12 data bytes |
+| Finalize | `0x02` | Empty |
+
+Data-byte counts **MUST** be even. Begin **MUST** validate declared bounds
+before accepting a transfer. Data offsets **MUST** equal the next expected
+canonical-image offset; duplicate, skipped, or overlapping data **MUST** be
+rejected. Finalize **MUST** require exactly all declared image bytes.
+
+### REQ-OPT-BPF-004: Flash write discipline
+
+The loader **MUST** erase each required 4,096-byte reserved flash page at
+most once per load attempt, before programming its first image byte. It
+**MUST** program image data only in ascending, two-byte-aligned order and
+**MUST NOT** erase a page per I2C fragment or rewrite programmed bytes.
+
+The loader **MUST NOT** require a page-sized RAM buffer. Erase, program,
+header validation, and CRC calculation **MUST NOT** run in the I2C callback.
+
+### REQ-OPT-BPF-005: Deferred command completion
+
+The I2C callback **MUST** copy at most one valid Load BPF request into
+fixed-capacity pending state and return `STATUS_OK` only to acknowledge
+acceptance. The main loop **MUST** perform the associated flash operation.
+While an operation is pending, further Load BPF requests **MUST** return
+`STATUS_BUSY`; such requests **MUST NOT** change loader state. A flash
+failure **MUST** be retained until the next Begin or reset and exposed by
+`CMD_QUERY_BPF_CRC`.
+
+### REQ-OPT-BPF-006: Load state and reset
+
+Before BPF execution begins, Begin **MAY** replace a previously committed
+image. A failed or incomplete attempt **MUST NOT** be marked committed or
+executed. Reset **MUST** preserve a committed flash image and its CRC while
+clearing volatile loader and running state.
+
+When Start BPF is later implemented and successfully transitions an image to
+running, Load BPF **MUST** return `STATUS_BAD_STATE` until reset. The current
+Start BPF stub **MUST NOT** transition this state.
+
+### REQ-OPT-BPF-007: Image CRC query
+
+`CMD_QUERY_BPF_CRC` **MUST** require zero flags and an empty payload. If a
+flash operation is pending, it **MUST** return `STATUS_BUSY`. If no committed
+valid image exists, it **MUST** return `STATUS_NO_PROGRAM`. If the last
+operation failed, it **MUST** return `STATUS_FLASH_ERROR` or
+`STATUS_BAD_CRC`, as applicable. Otherwise it **MUST** return `STATUS_OK`
+with the committed four-byte CRC-32 in little-endian order.
+
+The CRC query **MUST NOT** mutate flash, map backing storage, status storage,
+or loader/running state. Responses **MUST** retain the request sequence.
+
+### REQ-OPT-BPF-008: Sonde compatibility boundary
+
+The loader **MUST** preserve Sonde interpreter prerequisites for later
+execution: eight-byte instruction alignment and non-aliasing, live map-region
+bounds derived from the committed array-map descriptors. It **MUST NOT**
+implement Sonde CBOR encoding, helper registration, verification, map initial
+data, read-only maps, or execution in this change.
+
+### REQ-OPT-BPF-009: Loader statuses
+
+The shared protocol **MUST** define these additional response statuses:
+
+| Status | Value |
+| --- | ---: |
+| `STATUS_BUSY` | `0x05` |
+| `STATUS_BAD_STATE` | `0x06` |
+| `STATUS_BAD_CRC` | `0x07` |
+| `STATUS_FLASH_ERROR` | `0x08` |
+| `STATUS_NO_PROGRAM` | `0x09` |
