@@ -36,6 +36,7 @@ dependencies = [
  "embassy-usb-driver",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
+ "embedded-storage",
 ]
 
 [[package]]
@@ -273,6 +274,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-storage"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a21dea9854beb860f3062d10228ce9b976da520a73474aed3171ec276bc0c032"
+
+[[package]]
 name = "encode_unicode"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -379,6 +386,7 @@ dependencies = [
  "ch32v203g6u6-embassy-hal",
  "critical-section",
  "embassy-executor",
+ "embedded-storage",
  "optibridge-protocol",
  "riscv",
  "riscv-rt",
