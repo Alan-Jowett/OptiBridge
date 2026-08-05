@@ -87,11 +87,15 @@ The six action commands are Reset (`0x01`), Load BPF (`0x02`), Start BPF
 (`0x03`), Read BPF map (`0x04`), Write BPF map (`0x05`), and Read Status
 (`0x06`). Payloads are bounded to 16 bytes; reserved flags must be zero.
 
-Only Read Status is currently functional: it removes and returns the newest
-startup status payload, initially `ready`. An empty status queue returns
-`STATUS_OK` with an empty payload. The other five actions return
-`STATUS_NOT_IMPLEMENTED`; they do not yet reset the MCU or implement BPF, map,
-or optical behavior.
+Reset is functional and immediately reboots the MCU. It is fire-and-forget:
+the master must not read a target response after a valid Reset request. Read
+Status removes and returns the newest startup status payload, initially
+`ready`. An empty status queue returns `STATUS_OK` with an empty payload. The
+remaining four actions return `STATUS_NOT_IMPLEMENTED`; they do not implement
+BPF, map, or optical behavior.
+
+After Reset, a master must wait at least one second before sending another I2C
+request.
 
 The USB bridge uses the same frame format:
 
@@ -117,9 +121,8 @@ size measurement.
 | Image configuration | Flash |
 | --- | ---: |
 | I2C slave baseline | 8,078 bytes |
-| With retained `sonde-bpf` interpreter | 21,756 bytes |
-| Interpreter increment | 13,678 bytes |
-| Remaining within 32 KiB | 11,012 bytes |
+| Current release image with retained `sonde-bpf` interpreter | 20,430 bytes |
+| Remaining within 32 KiB | 12,338 bytes |
 
 This probe does not implement BPF loading, helpers, maps, or optical runtime
 execution.

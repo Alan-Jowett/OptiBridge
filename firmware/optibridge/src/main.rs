@@ -1,13 +1,19 @@
 #![no_std]
 #![no_main]
 
-use core::{cell::RefCell, panic::PanicInfo, ptr::addr_of_mut};
+use core::{
+    cell::RefCell,
+    panic::PanicInfo,
+    ptr::addr_of_mut,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use ch32v203g6u6_embassy_hal::{
     gpio::{DRV_GPIOB_RUNTIME_RESOURCES, GPIOB},
     i2c::{
         DRV_I2C1_SLAVE_RUNTIME_RESOURCES, I2C1Slave, queue_drv_i2c1_slave_i2c_slave_isr_tx_packet,
     },
+    interrupt::system_reset,
     rcc::{DRV_RCC_RUNTIME_RESOURCES, RCC},
     wch,
 };
@@ -44,6 +50,7 @@ impl ProtocolState {
 static PROTOCOL_STATE: Mutex<RefCell<ProtocolState>> =
     Mutex::new(RefCell::new(ProtocolState::new()));
 static mut I2C_RX_BUFFER: [u8; MAX_FRAME] = [0; MAX_FRAME];
+static RESET_PENDING: AtomicBool = AtomicBool::new(false);
 
 fn configure_i2c_pins() {
     unsafe {
@@ -83,7 +90,7 @@ fn panic(_info: &PanicInfo<'_>) -> ! {
 
 fn on_i2c_packet(packet: &[u8], truncated: bool) {
     let mut snapshot = [0; MAX_FRAME];
-    let response_length = critical_section::with(|cs| {
+    let outcome = critical_section::with(|cs| {
         let mut state = PROTOCOL_STATE.borrow(cs).borrow_mut();
         let ProtocolState {
             status_queue,
@@ -92,14 +99,22 @@ fn on_i2c_packet(packet: &[u8], truncated: bool) {
         match dispatch_packet(packet, truncated, status_queue, response) {
             PacketOutcome::Response(length) => {
                 snapshot[..length].copy_from_slice(&state.response[..length]);
-                Some(length)
+                PacketOutcome::Response(length)
             }
-            PacketOutcome::Empty => None,
+            PacketOutcome::Empty => PacketOutcome::Empty,
+            PacketOutcome::Reset => PacketOutcome::Reset,
         }
     });
 
-    let response = response_length.map_or(&[][..], |length| &snapshot[..length]);
-    let _ = queue_drv_i2c1_slave_i2c_slave_isr_tx_packet(response);
+    match outcome {
+        PacketOutcome::Response(length) => {
+            let _ = queue_drv_i2c1_slave_i2c_slave_isr_tx_packet(&snapshot[..length]);
+        }
+        PacketOutcome::Empty => {
+            let _ = queue_drv_i2c1_slave_i2c_slave_isr_tx_packet(&[]);
+        }
+        PacketOutcome::Reset => RESET_PENDING.store(true, Ordering::Release),
+    }
 }
 
 #[embassy_executor::main(entry = "riscv_rt::entry")]
@@ -124,6 +139,9 @@ async fn main(_spawner: Spawner) -> ! {
         .unwrap();
 
     loop {
+        if RESET_PENDING.load(Ordering::Acquire) {
+            system_reset();
+        }
         core::hint::spin_loop();
     }
 }
