@@ -39,6 +39,8 @@ startup
   -> packet-local parse
   -> incomplete or malformed: queue empty packet
   -> dispatch final complete frame
+  -> dispatch Reset: set reset pending, return from ISR
+  -> main loop: reset MCU
   -> queue bounded response
   -> remain armed for next master write
 ```
@@ -68,7 +70,7 @@ It validates flags before command-specific payload length. The action table is:
 
 | Command | Valid request | Response | Runtime effect |
 | --- | --- | --- | --- |
-| Reset (`0x01`) | Empty | `STATUS_NOT_IMPLEMENTED` | None |
+| Reset (`0x01`) | Empty | No response | Immediate generated-HAL system reset |
 | Load BPF (`0x02`) | Empty | `STATUS_NOT_IMPLEMENTED` | None |
 | Start BPF (`0x03`) | Empty | `STATUS_NOT_IMPLEMENTED` | None |
 | Read BPF map (`0x04`) | Empty | `STATUS_NOT_IMPLEMENTED` | None |
@@ -76,7 +78,9 @@ It validates flags before command-specific payload length. The action table is:
 | Read Status (`0x06`) | Empty | `STATUS_OK` + newest message | Pop newest message |
 
 `STATUS_NOT_IMPLEMENTED` is `0x04`. Unknown commands retain
-`STATUS_BAD_COMMAND`. All action errors are status-only responses.
+`STATUS_BAD_COMMAND`. A valid Reset is fire-and-forget and does not queue a
+response. The master waits at least one second before its next I2C request.
+Reset validation errors and all other action errors are status-only responses.
 
 ## Status storage
 
@@ -93,11 +97,14 @@ capacity, and overflow behavior.
 
 The panic handler spins indefinitely. Startup `unwrap` failures and Sonde
 probe mismatch reach this handler. Every completed packet replaces the response
-slot, including rejected packets that queue an empty response. Low-level bus
+slot, including rejected packets that queue an empty response, except valid
+Reset, which sets an atomic pending flag. The main loop invokes generated
+`interrupt::system_reset()` after the I2C ISR returns. Reset reruns startup and
+the Sonde probe; a probe failure leaves the target unavailable. Low-level bus
 errors that abort before packet completion are an accepted deferred gap: they
 do not enter the callback and can leave an unread generated response slot
-unchanged. No timeout, retry, I2C bus recovery, actual reset, or other recovery
-mechanism is implemented.
+unchanged. No timeout, retry, I2C bus recovery, or other recovery mechanism is
+implemented.
 
 ## Resource model
 
@@ -111,6 +118,6 @@ the pinned external `sonde-bpf` dependency.
 | --- | --- |
 | Platform and startup | REQ-OPT-FW-001, REQ-OPT-FW-002, REQ-OPT-FW-007 |
 | I2C ISR state machine | REQ-OPT-FW-003, REQ-OPT-FW-004, REQ-OPT-FW-006, REQ-OPT-FW-009 to REQ-OPT-FW-013 |
-| Action dispatch | REQ-OPT-FW-005, REQ-OPT-ACT-001, REQ-OPT-ACT-003, REQ-OPT-ACT-004, REQ-OPT-ACT-005, REQ-OPT-ACT-006 |
+| Action dispatch | REQ-OPT-FW-005, REQ-OPT-FW-014, REQ-OPT-ACT-001, REQ-OPT-ACT-003 to REQ-OPT-ACT-009 |
 | Status storage | REQ-OPT-ACT-002, REQ-OPT-ACT-003, REQ-OPT-ACT-007 |
 | Resource model | REQ-OPT-FW-008 |

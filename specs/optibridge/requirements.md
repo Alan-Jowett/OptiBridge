@@ -3,8 +3,8 @@
 ## Scope
 
 This specification describes the CH32V203G6U6 OptiBridge firmware's bounded
-I2C action surface. It exposes six README-defined actions as no-side-effect
-stubs and exposes startup liveness through Read Status.
+I2C action surface. It implements Reset, exposes four remaining action stubs,
+and exposes startup liveness through Read Status.
 
 **KNOWN:** BPF loading, verification beyond the startup probe, maps, helpers,
 optical I/O, calibration, interrupts, and a general status-buffer API are not
@@ -16,6 +16,10 @@ implemented and are out of scope.
 
 The firmware **MUST** target CH32V203G6U6 and consume the externally generated
 HardwareAbstractionIR HAL. It **MUST NOT** vendor HAL source code.
+
+The HAL generator input and source revision **MUST** be pinned to
+`60e0de038210008018d0168f45854d113a5964cc` and regenerate the CH32V203G6U6
+HAL from that pin.
 
 ### REQ-OPT-FW-002: Startup and I2C electrical configuration
 
@@ -64,6 +68,9 @@ For every completed I2C receive capture, the firmware **MUST** replace the
 single response slot with either one bounded protocol response or an empty
 packet. A completed malformed, incomplete, or truncated capture **MUST** use
 an empty packet.
+
+Valid Reset is the exception: it **MUST** initiate reset before queuing a
+response.
 
 Low-level I2C bus-error paths that do not deliver a completed capture are
 deferred; this change **MUST NOT** introduce bus recovery or a response-slot
@@ -146,15 +153,15 @@ The initial response payload **MUST** be ASCII `ready`.
 
 ### REQ-OPT-ACT-004: Stub request validation
 
-`CMD_RESET`, `CMD_LOAD_BPF`, `CMD_START_BPF`, `CMD_READ_BPF_MAP`, and
-`CMD_WRITE_BPF_MAP` **MUST** require zero flags and zero payload. Nonzero flags
-**MUST** return `STATUS_BAD_FLAGS`; a nonempty payload **MUST** return
-`STATUS_BAD_LENGTH`.
+`CMD_LOAD_BPF`, `CMD_START_BPF`, `CMD_READ_BPF_MAP`, and `CMD_WRITE_BPF_MAP`
+**MUST** require zero flags and zero payload. Nonzero flags **MUST** return
+`STATUS_BAD_FLAGS`; a nonempty payload **MUST** return `STATUS_BAD_LENGTH`.
 
-### REQ-OPT-ACT-005: Stub behavior
+### REQ-OPT-ACT-005: Remaining stub behavior
 
-The five non-status commands **MUST NOT** reset the MCU, mutate runtime state,
-load or execute BPF, access maps, or access optical hardware.
+`CMD_LOAD_BPF`, `CMD_START_BPF`, `CMD_READ_BPF_MAP`, and `CMD_WRITE_BPF_MAP`
+**MUST NOT** mutate runtime state, load or execute BPF, access maps, or access
+optical hardware.
 
 They **MUST** return status-only `STATUS_NOT_IMPLEMENTED` (`0x04`) and retain
 the request sequence.
@@ -166,6 +173,27 @@ Commands outside the six defined action values **MUST** return status-only
 
 ### REQ-OPT-ACT-007: Deferred action semantics
 
-Actual reset behavior, BPF loading/execution, map semantics, optical behavior,
-additional status enqueue sources, and a general circular-status-buffer API
-**MUST NOT** be introduced by this change.
+BPF loading/execution, map semantics, optical behavior, additional status
+enqueue sources, and a general circular-status-buffer API **MUST NOT** be
+introduced by this change.
+
+### REQ-OPT-ACT-008: Immediate Reset
+
+`CMD_RESET` **MUST** require zero flags and zero payload. A valid request
+**MUST** request generated HAL `interrupt::system_reset()` after its I2C ISR
+returns and **MUST NOT** queue a protocol response. A master **MUST NOT** read
+a target response after a valid Reset request and **MUST** wait at least one
+second before its next I2C request.
+
+### REQ-OPT-ACT-009: Invalid Reset
+
+Reset with nonzero flags **MUST** return `STATUS_BAD_FLAGS`. Reset with zero
+flags and nonempty payload **MUST** return `STATUS_BAD_LENGTH`. Invalid Reset
+requests **MUST NOT** reset the MCU or consume status.
+
+### REQ-OPT-FW-014: Reset reinitialization
+
+The firmware **MUST** use generated HAL `interrupt::system_reset()` rather
+than direct PFIC MMIO. After restart, it **MUST** restore I2C address `0x42`
+and the initial `ready` status. It **MUST NOT** add reset acknowledgments,
+delay-based reset handling, allocation, or a reset-recovery subsystem.

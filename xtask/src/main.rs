@@ -5,8 +5,8 @@ use std::{
 };
 
 const HAIR_REPOSITORY: &str = "https://github.com/Alan-Jowett/HardwareAbstractionIR.git";
-const HAIR_REVISION: &str = "6d3c45a0228248e087634fae41bc07b7056bd482";
-const HAIR_INPUT_URL: &str = "https://raw.githubusercontent.com/Alan-Jowett/HardwareAbstractionIR/6d3c45a0228248e087634fae41bc07b7056bd482/evidence/wch/ch32v203g6u6/hair.json";
+const HAIR_REVISION: &str = "60e0de038210008018d0168f45854d113a5964cc";
+const HAIR_INPUT_URL: &str = "https://raw.githubusercontent.com/Alan-Jowett/HardwareAbstractionIR/60e0de038210008018d0168f45854d113a5964cc/evidence/wch/ch32v203g6u6/hair.json";
 const FLASH_LIMIT: u64 = 32 * 1024;
 
 fn main() -> ExitCode {
