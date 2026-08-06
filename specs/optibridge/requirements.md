@@ -6,10 +6,10 @@ This specification describes the CH32V203G6U6 OptiBridge firmware's bounded
 I2C action surface. It implements Reset, Load BPF, and Read BPF map, exposes
 two remaining action stubs, and exposes startup liveness through Read Status.
 
-**KNOWN:** BPF execution, verification beyond the startup probe, map access,
+**KNOWN:** BPF execution, verification beyond the startup probe, map writes,
 helpers, optical I/O, calibration, interrupts, and a general status-buffer API
-are not implemented and are out of scope. This specification adds only the
-flash-resident BPF image loader and image-CRC query surface.
+are not implemented and are out of scope. This specification adds the
+flash-resident BPF image loader, image-CRC query, and Read BPF map surfaces.
 
 ## Requirements
 

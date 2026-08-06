@@ -189,6 +189,9 @@ impl BpfLoader {
         byte_length: u8,
         backing: &'a [u8; BPF_MAX_MAP_BYTES],
     ) -> Result<&'a [u8], u8> {
+        if byte_length == 0 || byte_length as usize > MAX_PAYLOAD {
+            return Err(STATUS_BAD_LENGTH);
+        }
         if !matches!(self.state, LoaderState::Committed(_)) {
             return Err(STATUS_NO_PROGRAM);
         }
@@ -669,9 +672,6 @@ pub fn dispatch_with_bpf(
         }
         CMD_READ_BPF_MAP => {
             let byte_length = request.payload[3];
-            if byte_length == 0 || byte_length as usize > MAX_PAYLOAD {
-                return response(STATUS_BAD_LENGTH, request.sequence, &[], output);
-            }
             let byte_offset = u16::from_le_bytes([request.payload[1], request.payload[2]]);
             match loader.read_map(request.payload[0], byte_offset, byte_length, map_backing) {
                 Ok(bytes) => response(STATUS_OK, request.sequence, bytes, output),
@@ -706,9 +706,10 @@ pub fn dispatch_packet(
     status_queue: &mut StatusQueue,
     output: &mut [u8; MAX_FRAME],
 ) -> PacketOutcome {
-    dispatch_packet_inner(packet, truncated, |request| {
-        dispatch(&request, status_queue, output)
-    })
+    match parse_packet(packet, truncated) {
+        Some(request) => dispatch(&request, status_queue, output),
+        None => PacketOutcome::Empty,
+    }
 }
 
 pub fn dispatch_packet_with_bpf(
@@ -719,18 +720,20 @@ pub fn dispatch_packet_with_bpf(
     map_backing: &[u8; BPF_MAX_MAP_BYTES],
     output: &mut [u8; MAX_FRAME],
 ) -> PacketOutcome {
-    dispatch_packet_inner(packet, truncated, |request| {
-        dispatch_with_bpf(&request, status_queue, loader, map_backing, output)
-    })
+    match parse_packet(packet, truncated) {
+        Some(request) => dispatch_with_bpf(&request, status_queue, loader, map_backing, output),
+        None => PacketOutcome::Empty,
+    }
 }
 
-fn dispatch_packet_inner(
-    packet: &[u8],
-    truncated: bool,
-    dispatch_request: impl FnOnce(Request) -> PacketOutcome,
-) -> PacketOutcome {
+/// Parses one complete I2C receive capture.
+///
+/// A capture is valid only if it is not truncated, has no malformed frames or
+/// trailing partial frame, and contains at least one complete frame. For
+/// captures containing multiple frames, returns the final complete frame.
+pub fn parse_packet(packet: &[u8], truncated: bool) -> Option<Request> {
     if truncated {
-        return PacketOutcome::Empty;
+        return None;
     }
     let mut parser = Parser::new();
     let mut request = None;
@@ -738,16 +741,10 @@ fn dispatch_packet_inner(
         match parser.push(*byte) {
             Ok(Some(value)) => request = Some(value),
             Ok(None) => {}
-            Err(_) => return PacketOutcome::Empty,
+            Err(_) => return None,
         }
     }
-    if parser.length != 0 {
-        return PacketOutcome::Empty;
-    }
-    match request {
-        Some(request) => dispatch_request(request),
-        None => PacketOutcome::Empty,
-    }
+    if parser.length != 0 { None } else { request }
 }
 
 #[cfg(test)]
@@ -1347,6 +1344,14 @@ mod tests {
             *byte = index as u8;
         }
         let original_backing = map_backing;
+        assert_eq!(
+            loader.read_map(1, 0, 0, &map_backing),
+            Err(STATUS_BAD_LENGTH)
+        );
+        assert_eq!(
+            loader.read_map(1, 0, MAX_PAYLOAD as u8 + 1, &map_backing),
+            Err(STATUS_BAD_LENGTH)
+        );
         let mut status_queue = StatusQueue::ready();
         let mut output = [0; MAX_FRAME];
         let mut request = Request::empty();
