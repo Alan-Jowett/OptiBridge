@@ -32,7 +32,9 @@ pub const BPF_MAX_BYTECODE: usize = 7680;
 pub const BPF_MAX_MAPS: usize = 8;
 pub const BPF_MAP_DESCRIPTOR_SIZE: usize = 16;
 pub const BPF_MAX_MAP_BYTES: usize = 1024;
-const MAP_WRITE_LOCATION_SIZE: usize = 2;
+const MAP_WRITE_LOCATION_SIZE: u8 = 2;
+const MAP_WRITE_LOCATION_SIZE_USIZE: usize = MAP_WRITE_LOCATION_SIZE as usize;
+const MAX_MAP_WRITE_BYTES: usize = 14;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LoadOperation {
@@ -220,7 +222,7 @@ impl BpfLoader {
         replacement: &[u8],
         backing: &mut [u8; BPF_MAX_MAP_BYTES],
     ) -> Result<(), u8> {
-        if replacement.is_empty() || replacement.len() > MAX_PAYLOAD - MAP_WRITE_LOCATION_SIZE {
+        if replacement.is_empty() || replacement.len() > MAX_MAP_WRITE_BYTES {
             return Err(STATUS_BAD_LENGTH);
         }
         if !matches!(self.state, LoaderState::Committed(_)) {
@@ -711,7 +713,7 @@ pub fn dispatch_with_bpf(
                 Err(status) => response(status, request.sequence, &[], output),
             }
         }
-        CMD_WRITE_BPF_MAP if request.payload_len < MAP_WRITE_LOCATION_SIZE as u8 + 1 => {
+        CMD_WRITE_BPF_MAP if request.payload_len < MAP_WRITE_LOCATION_SIZE + 1 => {
             response(STATUS_BAD_LENGTH, request.sequence, &[], output)
         }
         CMD_WRITE_BPF_MAP => {
@@ -721,7 +723,8 @@ pub fn dispatch_with_bpf(
             }
             let map_id = ((map_location >> 10) & 0x07) as u8;
             let byte_offset = map_location & 0x03ff;
-            let replacement = &request.payload[MAP_WRITE_LOCATION_SIZE..request.payload_len as usize];
+            let replacement =
+                &request.payload[MAP_WRITE_LOCATION_SIZE_USIZE..request.payload_len as usize];
             match loader.write_map(map_id, byte_offset, replacement, map_backing) {
                 Ok(()) => response(STATUS_OK, request.sequence, &[], output),
                 Err(status) => response(status, request.sequence, &[], output),
@@ -1512,7 +1515,7 @@ mod tests {
             Err(STATUS_BAD_LENGTH)
         );
         assert_eq!(
-            loader.write_map(1, 0, &[0; 15], &mut map_backing),
+            loader.write_map(1, 0, &[0; MAX_MAP_WRITE_BYTES + 1], &mut map_backing),
             Err(STATUS_BAD_LENGTH)
         );
         assert_eq!(
