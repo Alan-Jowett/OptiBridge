@@ -3,13 +3,14 @@
 ## Scope
 
 This specification describes the CH32V203G6U6 OptiBridge firmware's bounded
-I2C action surface. It implements Reset, Load BPF, and Read BPF map, exposes
-two remaining action stubs, and exposes startup liveness through Read Status.
+I2C action surface. It implements Reset, Load BPF, Read BPF map, and Write
+BPF map, exposes one remaining action stub, and exposes startup liveness
+through Read Status.
 
-**KNOWN:** BPF execution, verification beyond the startup probe, map writes,
-helpers, optical I/O, calibration, interrupts, and a general status-buffer API
-are not implemented and are out of scope. This specification adds the
-flash-resident BPF image loader, image-CRC query, and Read BPF map surfaces.
+**KNOWN:** BPF execution, verification beyond the startup probe, helpers,
+optical I/O, calibration, interrupts, and a general status-buffer API are not
+implemented and are out of scope. This specification adds the flash-resident
+BPF image loader, image-CRC query, and Read and Write BPF map surfaces.
 
 ## Requirements
 
@@ -87,7 +88,7 @@ runtime feature.
 ### REQ-OPT-FW-008: Resource constraints
 
 The firmware **MUST** be `no_std` and allocation-free. Its release `text +
-data` flash use **MUST NOT** exceed 32,768 bytes.
+data` flash use **MUST NOT** exceed 24,576 bytes.
 
 The firmware image **MUST** link entirely below flash offset `0x6000`, reserving
 `0x6000..=0x7fff` exclusively for BPF image storage. All static RAM, runtime
@@ -161,29 +162,27 @@ The initial response payload **MUST** be ASCII `ready`.
 
 ### REQ-OPT-ACT-004: Stub request validation
 
-`CMD_START_BPF` and `CMD_WRITE_BPF_MAP` **MUST** require
-zero flags and zero payload. Nonzero flags **MUST** return `STATUS_BAD_FLAGS`;
-a nonempty payload **MUST** return `STATUS_BAD_LENGTH`.
+`CMD_START_BPF` **MUST** require zero flags and zero payload. Nonzero flags
+**MUST** return `STATUS_BAD_FLAGS`; a nonempty payload **MUST** return
+`STATUS_BAD_LENGTH`.
 
 ### REQ-OPT-ACT-005: Remaining stub behavior
 
-`CMD_START_BPF` and `CMD_WRITE_BPF_MAP` **MUST NOT**
-mutate runtime state, load or execute BPF, access maps, or access optical
-hardware.
+`CMD_START_BPF` **MUST NOT** mutate runtime state, load or execute BPF, access
+maps, or access optical hardware.
 
-They **MUST** return status-only `STATUS_NOT_IMPLEMENTED` (`0x04`) and retain
-the request sequence.
+It **MUST** return status-only `STATUS_NOT_IMPLEMENTED` (`0x04`) and retain the
+request sequence.
 
 ### REQ-OPT-ACT-006: Unknown commands
 
-Commands outside the six defined action values **MUST** return status-only
+Commands outside the seven defined action values **MUST** return status-only
 `STATUS_BAD_COMMAND` and retain the request sequence.
 
 ### REQ-OPT-ACT-007: Deferred action semantics
 
-BPF execution, map write semantics, optical behavior, additional status
-enqueue sources, and a general circular-status-buffer API **MUST NOT** be
-introduced by this change.
+BPF execution, optical behavior, additional status enqueue sources, and a
+general circular-status-buffer API **MUST NOT** be introduced by this change.
 
 ### REQ-OPT-ACT-008: Immediate Reset
 
@@ -347,3 +346,36 @@ image exists, it **MUST** return `STATUS_NO_PROGRAM`.
 Map reads **MUST NOT** mutate map backing, flash, loader state, or status
 storage. They **MUST** hold synchronization only for the bounded copy of up
 to 16 requested bytes.
+
+### REQ-OPT-MAP-WRITE-001: Write BPF map command
+
+`CMD_WRITE_BPF_MAP` **MUST** require zero flags and a payload of three through
+16 bytes: `map_location` (`u16` little-endian) followed by one through 14 raw
+replacement bytes. The replacement length is inferred from the payload length.
+`map_location` bits `0..9` encode the map-relative byte offset, bits `10..12`
+encode the map ID, and bits `13..15` are reserved and **MUST** be zero.
+
+For a valid request, the firmware **MUST** replace exactly the selected map's
+backing bytes at the half-open map-relative range
+`[byte_offset, byte_offset + replacement_length)`, return status-only
+`STATUS_OK`, and retain the request sequence.
+
+### REQ-OPT-MAP-WRITE-002: Write map backing state
+
+Map writes **MUST** use the descriptor-derived backing offsets and lengths
+defined by REQ-OPT-MAP-READ-002. They **MUST NOT** modify backing outside the
+selected range, flash, loader state, or status storage. Map backing remains
+volatile and zero-initialized at boot; writes **MUST NOT** persist across reset.
+
+### REQ-OPT-MAP-WRITE-003: Write errors and synchronization
+
+`CMD_WRITE_BPF_MAP` with nonzero flags **MUST** return `STATUS_BAD_FLAGS`.
+Payloads shorter than three bytes, nonzero reserved `map_location` bits, ranges
+that fall outside the selected map, and a missing replacement byte **MUST**
+return `STATUS_BAD_LENGTH`. A map ID that does not identify a map in the valid
+committed image **MUST** return `STATUS_BAD_COMMAND`. When no valid committed
+image exists, it **MUST** return `STATUS_NO_PROGRAM`. Rejected writes **MUST
+NOT** mutate map backing.
+
+Map writes **MUST** hold synchronization only for the bounded copy of up to 14
+replacement bytes and response snapshot.

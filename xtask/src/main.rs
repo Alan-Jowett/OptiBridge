@@ -7,7 +7,8 @@ use std::{
 const HAIR_REPOSITORY: &str = "https://github.com/Alan-Jowett/HardwareAbstractionIR.git";
 const HAIR_REVISION: &str = "60e0de038210008018d0168f45854d113a5964cc";
 const HAIR_INPUT_URL: &str = "https://raw.githubusercontent.com/Alan-Jowett/HardwareAbstractionIR/60e0de038210008018d0168f45854d113a5964cc/evidence/wch/ch32v203g6u6/hair.json";
-const FLASH_LIMIT: u64 = 32 * 1024;
+const OPTIBRIDGE_FLASH_LIMIT: u64 = 24 * 1024;
+const I2C_BRIDGE_FLASH_LIMIT: u64 = 32 * 1024;
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
@@ -42,7 +43,10 @@ fn report_size() -> Result<(), Box<dyn std::error::Error>> {
         .join("target")
         .join("riscv32imc-unknown-none-elf")
         .join("release");
-    for name in ["optibridge", "i2c-bridge"] {
+    for (name, flash_limit) in [
+        ("optibridge", OPTIBRIDGE_FLASH_LIMIT),
+        ("i2c-bridge", I2C_BRIDGE_FLASH_LIMIT),
+    ] {
         let image = target.join(name);
         if !image.is_file() {
             return Err(format!("missing release image {}", image.display()).into());
@@ -68,8 +72,8 @@ fn report_size() -> Result<(), Box<dyn std::error::Error>> {
             .parse::<u64>()?;
         let flash = text + data;
         println!("{name}: text={text} bytes, data={data} bytes, flash={flash} bytes");
-        if flash > FLASH_LIMIT {
-            return Err(format!("{name} exceeds the {FLASH_LIMIT}-byte flash limit").into());
+        if flash > flash_limit {
+            return Err(format!("{name} exceeds the {flash_limit}-byte flash limit").into());
         }
     }
     Ok(())
