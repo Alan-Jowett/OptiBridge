@@ -78,7 +78,7 @@ It validates flags before command-specific payload length. The action table is:
 | Load BPF (`0x02`) | Begin, Data, or Finalize | `STATUS_OK` on acceptance | Deferred flash-image operation |
 | Start BPF (`0x03`) | Empty | `STATUS_NOT_IMPLEMENTED` | None |
 | Read BPF map (`0x04`) | Map ID + byte range | `STATUS_OK` + raw bytes | Bounded map snapshot |
-| Write BPF map (`0x05`) | Empty | `STATUS_NOT_IMPLEMENTED` | None |
+| Write BPF map (`0x05`) | Map ID + byte range + raw bytes | Status-only `STATUS_OK` | Bounded map update |
 | Read Status (`0x06`) | Empty | `STATUS_OK` + newest message | Pop newest message |
 | Query BPF CRC (`0x07`) | Empty | CRC, busy, no-program, or loader error | None |
 
@@ -136,7 +136,7 @@ descriptors; it fits the two-page reservation with the header. The main loop
 checks all map products and their aggregate 1,024-byte RAM allocation before
 writing the commit marker.
 
-## Map read state
+## Map state
 
 Validated descriptors are laid out consecutively in the fixed 1,024-byte map
 backing store. A descriptor's backing length is `value_size * max_entries`;
@@ -149,6 +149,16 @@ into the shared response while holding the protocol state only for that copy.
 No valid image returns `STATUS_NO_PROGRAM`; an unknown map returns
 `STATUS_BAD_COMMAND`; malformed or out-of-range byte ranges return
 `STATUS_BAD_LENGTH`.
+
+Write BPF map accepts `[map_location_le[0], map_location_le[1],
+replacement_bytes...]`. `map_location` packs the 10-bit map-relative byte
+offset in bits `0..9` and the 3-bit map ID in bits `10..12`; bits `13..15` are
+zero. Its one-through-14-byte replacement range is inferred from the payload
+length. It synchronously replaces exactly that map-relative range while holding
+shared protocol state only for the bounded copy and response snapshot. It
+returns status-only `STATUS_OK`; no valid image, unknown map, and malformed or
+out-of-range ranges return the same respective statuses as reads. Writes are
+volatile: startup clears all backing before accepting requests.
 
 At startup the main loop validates header magic/version/marker, bounds, map
 descriptors, and a recomputed CRC before treating an image as committed. The
@@ -195,8 +205,8 @@ bytes of execution stack.
 | --- | --- |
 | Platform and startup | REQ-OPT-FW-001, REQ-OPT-FW-002, REQ-OPT-FW-007 |
 | I2C ISR state machine | REQ-OPT-FW-003, REQ-OPT-FW-004, REQ-OPT-FW-006, REQ-OPT-FW-009 to REQ-OPT-FW-013 |
-| Action dispatch | REQ-OPT-FW-005, REQ-OPT-FW-014, REQ-OPT-ACT-001, REQ-OPT-ACT-003 to REQ-OPT-ACT-009 |
+| Action dispatch | REQ-OPT-FW-005, REQ-OPT-FW-014, REQ-OPT-ACT-001, REQ-OPT-ACT-003 to REQ-OPT-ACT-009, REQ-OPT-MAP-WRITE-001 to REQ-OPT-MAP-WRITE-003 |
 | Status storage | REQ-OPT-ACT-002, REQ-OPT-ACT-003, REQ-OPT-ACT-007 |
 | Resource model | REQ-OPT-FW-008 |
 | BPF image and flash state machine | REQ-OPT-BPF-001 to REQ-OPT-BPF-009 |
-| Map read state | REQ-OPT-MAP-READ-001 to REQ-OPT-MAP-READ-003 |
+| Map state | REQ-OPT-MAP-READ-001 to REQ-OPT-MAP-READ-003, REQ-OPT-MAP-WRITE-001 to REQ-OPT-MAP-WRITE-003 |

@@ -99,8 +99,9 @@ Status removes and returns the newest startup status payload, initially
 Load BPF stages an image over multiple transactions into reserved flash and
 supports only BPF bytecode plus array-map definitions; it does not execute the
 program. Query BPF CRC reports the committed image identity. Read BPF map
-returns a paged raw byte range from a loaded array map. Start BPF, map writes,
-and optical behavior remain `STATUS_NOT_IMPLEMENTED`.
+returns a paged raw byte range from a loaded array map. Write BPF map updates
+a paged raw byte range using a packed map ID and offset. Start BPF and optical
+behavior remain `STATUS_NOT_IMPLEMENTED`.
 
 After Reset, a master must wait at least one second before sending another I2C
 request.
@@ -114,8 +115,9 @@ The USB bridge uses the same frame format:
 
 I2C addresses are seven-bit values. Read lengths are limited to 16 bytes.
 Malformed frames, unsupported commands, and failed I2C operations return a
-nonzero status response. `cargo xtask size` fails when either release image's
-flash sections exceed 32 KiB.
+nonzero status response. `cargo xtask size` fails when the OptiBridge image
+exceeds 24 KiB (preserving its 8 KiB BPF partition) or the bridge image's flash
+sections exceed 32 KiB.
 
 ### BPF interpreter footprint
 
@@ -129,8 +131,8 @@ size measurement.
 | Image configuration | Flash |
 | --- | ---: |
 | I2C slave baseline | 8,078 bytes |
-| Current release image with retained `sonde-bpf` interpreter | 20,430 bytes |
-| Remaining within 32 KiB | 12,338 bytes |
+| Current release image with retained `sonde-bpf` interpreter and map writes | 23,562 bytes |
+| Remaining below the BPF partition at `0x6000` | 1,014 bytes |
 
 This probe does not implement BPF loading, helpers, maps, or optical runtime
 execution.

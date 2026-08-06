@@ -133,13 +133,13 @@ fn on_i2c_packet(packet: &[u8], truncated: bool) {
     let outcome = match parse_packet(packet, truncated) {
         Some(request) => critical_section::with(|cs| {
             let mut state = PROTOCOL_STATE.borrow(cs).borrow_mut();
-            let map_backing = MAP_BACKING_STORE.borrow(cs).borrow();
+            let mut map_backing = MAP_BACKING_STORE.borrow(cs).borrow_mut();
             let ProtocolState {
                 status_queue,
                 loader,
                 response,
             } = &mut *state;
-            match dispatch_with_bpf(&request, status_queue, loader, &map_backing, response) {
+            match dispatch_with_bpf(&request, status_queue, loader, &mut map_backing, response) {
                 PacketOutcome::Response(length) => {
                     snapshot[..length].copy_from_slice(&state.response[..length]);
                     PacketOutcome::Response(length)
