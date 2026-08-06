@@ -77,7 +77,7 @@ It validates flags before command-specific payload length. The action table is:
 | Reset (`0x01`) | Empty | No response | Immediate generated-HAL system reset |
 | Load BPF (`0x02`) | Begin, Data, or Finalize | `STATUS_OK` on acceptance | Deferred flash-image operation |
 | Start BPF (`0x03`) | Empty | `STATUS_NOT_IMPLEMENTED` | None |
-| Read BPF map (`0x04`) | Empty | `STATUS_NOT_IMPLEMENTED` | None |
+| Read BPF map (`0x04`) | Map ID + byte range | `STATUS_OK` + raw bytes | Bounded map snapshot |
 | Write BPF map (`0x05`) | Empty | `STATUS_NOT_IMPLEMENTED` | None |
 | Read Status (`0x06`) | Empty | `STATUS_OK` + newest message | Pop newest message |
 | Query BPF CRC (`0x07`) | Empty | CRC, busy, no-program, or loader error | None |
@@ -136,6 +136,20 @@ descriptors; it fits the two-page reservation with the header. The main loop
 checks all map products and their aggregate 1,024-byte RAM allocation before
 writing the commit marker.
 
+## Map read state
+
+Validated descriptors are laid out consecutively in the fixed 1,024-byte map
+backing store. A descriptor's backing length is `value_size * max_entries`;
+its map ID is its zero-based descriptor index. Backing is zeroed at boot and
+is volatile.
+
+Read BPF map accepts `[map_id, byte_offset_le[0], byte_offset_le[1],
+byte_length]`. It copies the requested one-through-16-byte map-relative range
+into the shared response while holding the protocol state only for that copy.
+No valid image returns `STATUS_NO_PROGRAM`; an unknown map returns
+`STATUS_BAD_COMMAND`; malformed or out-of-range byte ranges return
+`STATUS_BAD_LENGTH`.
+
 At startup the main loop validates header magic/version/marker, bounds, map
 descriptors, and a recomputed CRC before treating an image as committed. The
 CRC query reports only this validated committed CRC. A partially programmed
@@ -185,3 +199,4 @@ bytes of execution stack.
 | Status storage | REQ-OPT-ACT-002, REQ-OPT-ACT-003, REQ-OPT-ACT-007 |
 | Resource model | REQ-OPT-FW-008 |
 | BPF image and flash state machine | REQ-OPT-BPF-001 to REQ-OPT-BPF-009 |
+| Map read state | REQ-OPT-MAP-READ-001 to REQ-OPT-MAP-READ-003 |

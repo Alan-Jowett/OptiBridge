@@ -62,6 +62,16 @@ enum LoaderState {
     Failed(u8),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MapLayout {
+    offset: u16,
+    len: u16,
+}
+
+impl MapLayout {
+    const EMPTY: Self = Self { offset: 0, len: 0 };
+}
+
 /// Fixed-capacity BPF image loader state. Flash operations are performed only
 /// by `execute_pending`, allowing the I2C callback to remain bounded.
 pub struct BpfLoader {
@@ -73,6 +83,8 @@ pub struct BpfLoader {
     next_offset: u16,
     expected_crc: u32,
     crc: u32,
+    map_layouts: [MapLayout; BPF_MAX_MAPS],
+    committed_map_count: u8,
 }
 
 impl BpfLoader {
@@ -86,6 +98,8 @@ impl BpfLoader {
             next_offset: 0,
             expected_crc: 0,
             crc: 0xffff_ffff,
+            map_layouts: [MapLayout::EMPTY; BPF_MAX_MAPS],
+            committed_map_count: 0,
         }
     }
 
@@ -168,6 +182,33 @@ impl BpfLoader {
         self.pending.is_some()
     }
 
+    pub fn read_map<'a>(
+        &self,
+        map_id: u8,
+        byte_offset: u16,
+        byte_length: u8,
+        backing: &'a [u8; BPF_MAX_MAP_BYTES],
+    ) -> Result<&'a [u8], u8> {
+        if !matches!(self.state, LoaderState::Committed(_)) {
+            return Err(STATUS_NO_PROGRAM);
+        }
+        let Some(layout) = self.map_layouts.get(map_id as usize) else {
+            return Err(STATUS_BAD_COMMAND);
+        };
+        if map_id >= self.committed_map_count {
+            return Err(STATUS_BAD_COMMAND);
+        }
+        let Some(map_end) = byte_offset.checked_add(byte_length as u16) else {
+            return Err(STATUS_BAD_LENGTH);
+        };
+        if map_end > layout.len {
+            return Err(STATUS_BAD_LENGTH);
+        }
+        let start = layout.offset as usize + byte_offset as usize;
+        let end = start + byte_length as usize;
+        backing.get(start..end).ok_or(STATUS_BAD_LENGTH)
+    }
+
     pub fn execute_pending<F: BpfFlash>(&mut self, flash: &mut F) {
         let Some(operation) = self.pending.take() else {
             return;
@@ -197,6 +238,7 @@ impl BpfLoader {
     }
 
     pub fn validate_committed<F: BpfFlash>(&mut self, flash: &mut F) {
+        self.clear_map_layouts();
         let mut header = [0; BPF_HEADER_SIZE];
         if flash.read(BPF_FLASH_OFFSET, &mut header).is_err() {
             self.state = LoaderState::Failed(STATUS_FLASH_ERROR);
@@ -244,11 +286,18 @@ impl BpfLoader {
             crc = crc32_update(crc, &chunk[..length]);
             offset += length;
         }
-        if crc32_finish(crc) != expected_crc || !validate_maps(flash, bytecode_len, map_count) {
+        let Some((map_layouts, committed_map_count)) = map_layouts(flash, bytecode_len, map_count)
+        else {
+            self.state = LoaderState::Empty;
+            return;
+        };
+        if crc32_finish(crc) != expected_crc {
             self.state = LoaderState::Empty;
             return;
         }
         self.state = LoaderState::Committed(expected_crc);
+        self.map_layouts = map_layouts;
+        self.committed_map_count = committed_map_count;
     }
 
     fn begin<F: BpfFlash>(
@@ -258,6 +307,7 @@ impl BpfLoader {
         map_count: u8,
         expected_crc: u32,
     ) {
+        self.clear_map_layouts();
         let Some(image_len) = image_len(bytecode_len, map_count) else {
             self.state = LoaderState::Failed(STATUS_FLASH_ERROR);
             return;
@@ -294,15 +344,24 @@ impl BpfLoader {
             self.state = LoaderState::Failed(STATUS_BAD_CRC);
             return;
         }
-        if !validate_maps(flash, self.bytecode_len, self.map_count) {
+        let Some((map_layouts, committed_map_count)) =
+            map_layouts(flash, self.bytecode_len, self.map_count)
+        else {
             self.state = LoaderState::Failed(STATUS_BAD_STATE);
             return;
-        }
+        };
         if flash.write(BPF_FLASH_OFFSET + 12, &[0, 0]).is_err() {
             self.state = LoaderState::Failed(STATUS_FLASH_ERROR);
             return;
         }
         self.state = LoaderState::Committed(self.expected_crc);
+        self.map_layouts = map_layouts;
+        self.committed_map_count = committed_map_count;
+    }
+
+    fn clear_map_layouts(&mut self) {
+        self.map_layouts = [MapLayout::EMPTY; BPF_MAX_MAPS];
+        self.committed_map_count = 0;
     }
 }
 
@@ -342,8 +401,13 @@ fn image_len(bytecode_len: u16, map_count: u8) -> Option<usize> {
     (bytecode_len as usize).checked_add((map_count as usize).checked_mul(BPF_MAP_DESCRIPTOR_SIZE)?)
 }
 
-fn validate_maps<F: BpfFlash>(flash: &mut F, bytecode_len: u16, map_count: u8) -> bool {
-    let mut total = 0usize;
+fn map_layouts<F: BpfFlash>(
+    flash: &mut F,
+    bytecode_len: u16,
+    map_count: u8,
+) -> Option<([MapLayout; BPF_MAX_MAPS], u8)> {
+    let mut total = 0u32;
+    let mut layouts = [MapLayout::EMPTY; BPF_MAX_MAPS];
     let mut descriptor = [0; BPF_MAP_DESCRIPTOR_SIZE];
     for index in 0..map_count as usize {
         let offset = BPF_FLASH_OFFSET
@@ -351,29 +415,41 @@ fn validate_maps<F: BpfFlash>(flash: &mut F, bytecode_len: u16, map_count: u8) -
             + bytecode_len as u32
             + (index * BPF_MAP_DESCRIPTOR_SIZE) as u32;
         if flash.read(offset, &mut descriptor).is_err() {
-            return false;
+            return None;
         }
-        let map_type = u32::from_le_bytes(descriptor[0..4].try_into().unwrap_or([0; 4]));
-        let key_size = u32::from_le_bytes(descriptor[4..8].try_into().unwrap_or([0; 4]));
-        let value_size = u32::from_le_bytes(descriptor[8..12].try_into().unwrap_or([0; 4]));
-        let max_entries = u32::from_le_bytes(descriptor[12..16].try_into().unwrap_or([0; 4]));
+        let map_type =
+            u32::from_le_bytes([descriptor[0], descriptor[1], descriptor[2], descriptor[3]]);
+        let key_size =
+            u32::from_le_bytes([descriptor[4], descriptor[5], descriptor[6], descriptor[7]]);
+        let value_size =
+            u32::from_le_bytes([descriptor[8], descriptor[9], descriptor[10], descriptor[11]]);
+        let max_entries = u32::from_le_bytes([
+            descriptor[12],
+            descriptor[13],
+            descriptor[14],
+            descriptor[15],
+        ]);
         let Some(bytes) = value_size.checked_mul(max_entries) else {
-            return false;
+            return None;
         };
-        let Some(next_total) = total.checked_add(bytes as usize) else {
-            return false;
+        let Some(next_total) = total.checked_add(bytes) else {
+            return None;
         };
         if map_type != 1
             || key_size != 4
             || value_size == 0
             || max_entries == 0
-            || next_total > BPF_MAX_MAP_BYTES
+            || next_total > BPF_MAX_MAP_BYTES as u32
         {
-            return false;
+            return None;
         }
+        layouts[index] = MapLayout {
+            offset: total as u16,
+            len: bytes as u16,
+        };
         total = next_total;
     }
-    true
+    Some((layouts, map_count))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -572,6 +648,7 @@ pub fn dispatch_with_bpf(
     request: &Request,
     status_queue: &mut StatusQueue,
     loader: &mut BpfLoader,
+    map_backing: &[u8; BPF_MAX_MAP_BYTES],
     output: &mut [u8; MAX_FRAME],
 ) -> PacketOutcome {
     if request.flags != 0 {
@@ -587,6 +664,20 @@ pub fn dispatch_with_bpf(
             &[],
             output,
         ),
+        CMD_READ_BPF_MAP if request.payload_len != 4 => {
+            response(STATUS_BAD_LENGTH, request.sequence, &[], output)
+        }
+        CMD_READ_BPF_MAP => {
+            let byte_length = request.payload[3];
+            if byte_length == 0 || byte_length as usize > MAX_PAYLOAD {
+                return response(STATUS_BAD_LENGTH, request.sequence, &[], output);
+            }
+            let byte_offset = u16::from_le_bytes([request.payload[1], request.payload[2]]);
+            match loader.read_map(request.payload[0], byte_offset, byte_length, map_backing) {
+                Ok(bytes) => response(STATUS_OK, request.sequence, bytes, output),
+                Err(status) => response(status, request.sequence, &[], output),
+            }
+        }
         CMD_QUERY_BPF_CRC if request.payload_len != 0 => {
             response(STATUS_BAD_LENGTH, request.sequence, &[], output)
         }
@@ -625,10 +716,11 @@ pub fn dispatch_packet_with_bpf(
     truncated: bool,
     status_queue: &mut StatusQueue,
     loader: &mut BpfLoader,
+    map_backing: &[u8; BPF_MAX_MAP_BYTES],
     output: &mut [u8; MAX_FRAME],
 ) -> PacketOutcome {
     dispatch_packet_inner(packet, truncated, |request| {
-        dispatch_with_bpf(&request, status_queue, loader, output)
+        dispatch_with_bpf(&request, status_queue, loader, map_backing, output)
     })
 }
 
@@ -1212,6 +1304,173 @@ mod tests {
     }
 
     #[test]
+    fn read_bpf_map_returns_committed_backing_ranges_and_errors() {
+        let mut image = [0u8; 40];
+        image[8..12].copy_from_slice(&1u32.to_le_bytes());
+        image[12..16].copy_from_slice(&4u32.to_le_bytes());
+        image[16..20].copy_from_slice(&2u32.to_le_bytes());
+        image[20..24].copy_from_slice(&4u32.to_le_bytes());
+        image[24..28].copy_from_slice(&1u32.to_le_bytes());
+        image[28..32].copy_from_slice(&4u32.to_le_bytes());
+        image[32..36].copy_from_slice(&4u32.to_le_bytes());
+        image[36..40].copy_from_slice(&8u32.to_le_bytes());
+        let crc = crc32_iso_hdlc(&image);
+        let mut loader = BpfLoader::new();
+        let mut flash = FakeFlash::new();
+        let mut begin = [0; 8];
+        begin[0] = 0;
+        begin[1..3].copy_from_slice(&8u16.to_le_bytes());
+        begin[3] = 2;
+        begin[4..].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(loader.accepts_load(&load_request(&begin)), Ok(()));
+        execute(&mut loader, &mut flash);
+        for (index, data) in image.chunks(12).enumerate() {
+            let mut payload = [0; 15];
+            payload[0] = 1;
+            payload[1..3].copy_from_slice(&((index * 12) as u16).to_le_bytes());
+            payload[3..3 + data.len()].copy_from_slice(data);
+            assert_eq!(
+                loader.accepts_load(&load_request(&payload[..3 + data.len()])),
+                Ok(())
+            );
+            execute(&mut loader, &mut flash);
+        }
+        assert_eq!(loader.accepts_load(&load_request(&[2])), Ok(()));
+        execute(&mut loader, &mut flash);
+
+        let mut loader = BpfLoader::new();
+        loader.validate_committed(&mut flash);
+        assert_eq!(loader.query(), Ok(crc));
+
+        let mut map_backing = [0; BPF_MAX_MAP_BYTES];
+        for (index, byte) in map_backing[..40].iter_mut().enumerate() {
+            *byte = index as u8;
+        }
+        let original_backing = map_backing;
+        let mut status_queue = StatusQueue::ready();
+        let mut output = [0; MAX_FRAME];
+        let mut request = Request::empty();
+        request.command = CMD_READ_BPF_MAP;
+        request.sequence = 9;
+        request.payload_len = 4;
+        request.payload[..4].copy_from_slice(&[1, 12, 0, 16]);
+
+        let length = response_length(dispatch_with_bpf(
+            &request,
+            &mut status_queue,
+            &mut loader,
+            &map_backing,
+            &mut output,
+        ));
+        assert_eq!(
+            &output[..length],
+            &[
+                MAGIC, STATUS_OK, 16, 9, 0, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
+                34, 35
+            ]
+        );
+        assert_eq!(map_backing, original_backing);
+
+        request.flags = 1;
+        let length = response_length(dispatch_with_bpf(
+            &request,
+            &mut status_queue,
+            &mut loader,
+            &map_backing,
+            &mut output,
+        ));
+        assert_eq!(&output[..length], &[MAGIC, STATUS_BAD_FLAGS, 0, 9, 0]);
+        request.flags = 0;
+
+        request.payload_len = 3;
+        let length = response_length(dispatch_with_bpf(
+            &request,
+            &mut status_queue,
+            &mut loader,
+            &map_backing,
+            &mut output,
+        ));
+        assert_eq!(&output[..length], &[MAGIC, STATUS_BAD_LENGTH, 0, 9, 0]);
+        request.payload_len = 4;
+
+        request.payload[3] = 0;
+        let length = response_length(dispatch_with_bpf(
+            &request,
+            &mut status_queue,
+            &mut loader,
+            &map_backing,
+            &mut output,
+        ));
+        assert_eq!(&output[..length], &[MAGIC, STATUS_BAD_LENGTH, 0, 9, 0]);
+        request.payload[3] = 16;
+
+        request.payload[3] = 17;
+        let length = response_length(dispatch_with_bpf(
+            &request,
+            &mut status_queue,
+            &mut loader,
+            &map_backing,
+            &mut output,
+        ));
+        assert_eq!(&output[..length], &[MAGIC, STATUS_BAD_LENGTH, 0, 9, 0]);
+        request.payload[3] = 16;
+
+        request.payload[0] = 2;
+        let length = response_length(dispatch_with_bpf(
+            &request,
+            &mut status_queue,
+            &mut loader,
+            &map_backing,
+            &mut output,
+        ));
+        assert_eq!(&output[..length], &[MAGIC, STATUS_BAD_COMMAND, 0, 9, 0]);
+        request.payload[0] = 1;
+        request.payload[1..4].copy_from_slice(&[31, 0, 2]);
+        let length = response_length(dispatch_with_bpf(
+            &request,
+            &mut status_queue,
+            &mut loader,
+            &map_backing,
+            &mut output,
+        ));
+        assert_eq!(&output[..length], &[MAGIC, STATUS_BAD_LENGTH, 0, 9, 0]);
+
+        request.payload[1..4].copy_from_slice(&[0xff, 0xff, 1]);
+        let length = response_length(dispatch_with_bpf(
+            &request,
+            &mut status_queue,
+            &mut loader,
+            &map_backing,
+            &mut output,
+        ));
+        assert_eq!(&output[..length], &[MAGIC, STATUS_BAD_LENGTH, 0, 9, 0]);
+
+        let mut no_program = BpfLoader::new();
+        request.payload[1..4].copy_from_slice(&[0, 0, 1]);
+        let length = response_length(dispatch_with_bpf(
+            &request,
+            &mut status_queue,
+            &mut no_program,
+            &map_backing,
+            &mut output,
+        ));
+        assert_eq!(&output[..length], &[MAGIC, STATUS_NO_PROGRAM, 0, 9, 0]);
+        request.command = CMD_READ_STATUS;
+        request.payload_len = 0;
+        let length = response_length(dispatch_with_bpf(
+            &request,
+            &mut status_queue,
+            &mut loader,
+            &map_backing,
+            &mut output,
+        ));
+        assert_eq!(
+            &output[..length],
+            &[MAGIC, STATUS_OK, 5, 9, 0, b'r', b'e', b'a', b'd', b'y']
+        );
+    }
+
+    #[test]
     fn loader_rejects_invalid_transfer_and_never_commits_partial_image() {
         let mut loader = BpfLoader::new();
         let mut flash = FakeFlash::new();
@@ -1300,6 +1559,7 @@ mod tests {
     fn dispatches_bpf_operations_and_query_responses() {
         let mut status_queue = StatusQueue::ready();
         let mut loader = BpfLoader::new();
+        let map_backing = [0; BPF_MAX_MAP_BYTES];
         let mut output = [0; MAX_FRAME];
         let mut request = load_request(&[0, 8, 0, 0, 0, 0, 0, 0]);
         request.sequence = 3;
@@ -1307,6 +1567,7 @@ mod tests {
             &request,
             &mut status_queue,
             &mut loader,
+            &map_backing,
             &mut output,
         ));
         assert_eq!(&output[..length], &[MAGIC, STATUS_OK, 0, 3, 0]);
@@ -1318,6 +1579,7 @@ mod tests {
             &request,
             &mut status_queue,
             &mut loader,
+            &map_backing,
             &mut output,
         ));
         assert_eq!(&output[..length], &[MAGIC, STATUS_BUSY, 0, 4, 0]);

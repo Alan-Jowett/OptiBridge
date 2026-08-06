@@ -136,7 +136,15 @@ fn on_i2c_packet(packet: &[u8], truncated: bool) {
             loader,
             response,
         } = &mut *state;
-        match dispatch_packet_with_bpf(packet, truncated, status_queue, loader, response) {
+        let map_backing = unsafe { &*addr_of_mut!(MAP_BACKING_STORE) };
+        match dispatch_packet_with_bpf(
+            packet,
+            truncated,
+            status_queue,
+            loader,
+            map_backing,
+            response,
+        ) {
             PacketOutcome::Response(length) => {
                 snapshot[..length].copy_from_slice(&state.response[..length]);
                 PacketOutcome::Response(length)
@@ -165,6 +173,9 @@ async fn main(_spawner: Spawner) -> ! {
     rcc.configure_usb_fsdev_clock_48mhz().unwrap();
     wch::init_embassy_time_runtime().unwrap();
     let mut flash = FLASH::new(DRV_FLASH_RUNTIME_RESOURCES).unwrap();
+    unsafe {
+        (*addr_of_mut!(MAP_BACKING_STORE)).fill(0);
+    }
     critical_section::with(|cs| {
         let mut state = PROTOCOL_STATE.borrow(cs).borrow_mut();
         state

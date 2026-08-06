@@ -3,8 +3,8 @@
 ## Scope
 
 This specification describes the CH32V203G6U6 OptiBridge firmware's bounded
-I2C action surface. It implements Reset and Load BPF, exposes three remaining
-action stubs, and exposes startup liveness through Read Status.
+I2C action surface. It implements Reset, Load BPF, and Read BPF map, exposes
+two remaining action stubs, and exposes startup liveness through Read Status.
 
 **KNOWN:** BPF execution, verification beyond the startup probe, map access,
 helpers, optical I/O, calibration, interrupts, and a general status-buffer API
@@ -161,13 +161,13 @@ The initial response payload **MUST** be ASCII `ready`.
 
 ### REQ-OPT-ACT-004: Stub request validation
 
-`CMD_START_BPF`, `CMD_READ_BPF_MAP`, and `CMD_WRITE_BPF_MAP` **MUST** require
+`CMD_START_BPF` and `CMD_WRITE_BPF_MAP` **MUST** require
 zero flags and zero payload. Nonzero flags **MUST** return `STATUS_BAD_FLAGS`;
 a nonempty payload **MUST** return `STATUS_BAD_LENGTH`.
 
 ### REQ-OPT-ACT-005: Remaining stub behavior
 
-`CMD_START_BPF`, `CMD_READ_BPF_MAP`, and `CMD_WRITE_BPF_MAP` **MUST NOT**
+`CMD_START_BPF` and `CMD_WRITE_BPF_MAP` **MUST NOT**
 mutate runtime state, load or execute BPF, access maps, or access optical
 hardware.
 
@@ -181,7 +181,7 @@ Commands outside the six defined action values **MUST** return status-only
 
 ### REQ-OPT-ACT-007: Deferred action semantics
 
-BPF execution, map access semantics, optical behavior, additional status
+BPF execution, map write semantics, optical behavior, additional status
 enqueue sources, and a general circular-status-buffer API **MUST NOT** be
 introduced by this change.
 
@@ -316,3 +316,34 @@ The shared protocol **MUST** define these additional response statuses:
 | `STATUS_BAD_CRC` | `0x07` |
 | `STATUS_FLASH_ERROR` | `0x08` |
 | `STATUS_NO_PROGRAM` | `0x09` |
+
+### REQ-OPT-MAP-READ-001: Read BPF map command
+
+`CMD_READ_BPF_MAP` **MUST** require zero flags and exactly four payload bytes:
+`map_id` (`u8`), `byte_offset` (`u16` little-endian), and `byte_length`
+(`u8`). `byte_length` **MUST** be 1 through 16.
+
+For a valid request, the firmware **MUST** return `STATUS_OK`, retain the
+request sequence, and return exactly `byte_length` raw bytes from the selected
+map's backing store at the half-open map-relative range
+`[byte_offset, byte_offset + byte_length)`.
+
+### REQ-OPT-MAP-READ-002: Map backing layout
+
+After validating a committed image, firmware **MUST** derive every accepted
+map's backing offset and byte length from descriptors in map-index order.
+Map backing **MUST** remain within the fixed 1,024-byte allocation and
+**MUST** be zero-initialized at boot. This change **MUST NOT** make map
+contents persistent across reset.
+
+### REQ-OPT-MAP-READ-003: Read errors and synchronization
+
+`CMD_READ_BPF_MAP` with nonzero flags **MUST** return `STATUS_BAD_FLAGS`.
+Malformed payload shape, zero or over-16 length, and a range that overflows or
+falls outside the selected map **MUST** return `STATUS_BAD_LENGTH`. An
+unknown `map_id` **MUST** return `STATUS_BAD_COMMAND`. When no valid committed
+image exists, it **MUST** return `STATUS_NO_PROGRAM`.
+
+Map reads **MUST NOT** mutate map backing, flash, loader state, or status
+storage. They **MUST** hold synchronization only for the bounded copy of up
+to 16 requested bytes.

@@ -98,8 +98,9 @@ Status removes and returns the newest startup status payload, initially
 `ready`. An empty status queue returns `STATUS_OK` with an empty payload. The
 Load BPF stages an image over multiple transactions into reserved flash and
 supports only BPF bytecode plus array-map definitions; it does not execute the
-program. Query BPF CRC reports the committed image identity. Start BPF, map
-read/write, and optical behavior remain `STATUS_NOT_IMPLEMENTED`.
+program. Query BPF CRC reports the committed image identity. Read BPF map
+returns a paged raw byte range from a loaded array map. Start BPF, map writes,
+and optical behavior remain `STATUS_NOT_IMPLEMENTED`.
 
 After Reset, a master must wait at least one second before sending another I2C
 request.
