@@ -23,7 +23,7 @@ use embassy_executor::Spawner;
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use optibridge_protocol::{
     BPF_MAX_MAP_BYTES, BpfFlash, BpfLoader, MAX_FRAME, PacketOutcome, StatusQueue,
-    dispatch_packet_with_bpf,
+    dispatch_with_bpf, parse_packet,
 };
 
 const GPIOB_CFGLR: *mut u32 = 0x4001_0c00 as *mut u32;
@@ -62,7 +62,8 @@ static PROTOCOL_STATE: Mutex<RefCell<ProtocolState>> =
 static mut I2C_RX_BUFFER: [u8; MAX_FRAME] = [0; MAX_FRAME];
 #[used]
 #[unsafe(no_mangle)]
-static mut MAP_BACKING_STORE: [u8; BPF_MAX_MAP_BYTES] = [0; BPF_MAX_MAP_BYTES];
+static MAP_BACKING_STORE: Mutex<RefCell<[u8; BPF_MAX_MAP_BYTES]>> =
+    Mutex::new(RefCell::new([0; BPF_MAX_MAP_BYTES]));
 static RESET_PENDING: AtomicBool = AtomicBool::new(false);
 
 struct FlashStorage<'a>(&'a mut FLASH);
@@ -129,22 +130,26 @@ fn panic(_info: &PanicInfo<'_>) -> ! {
 
 fn on_i2c_packet(packet: &[u8], truncated: bool) {
     let mut snapshot = [0; MAX_FRAME];
-    let outcome = critical_section::with(|cs| {
-        let mut state = PROTOCOL_STATE.borrow(cs).borrow_mut();
-        let ProtocolState {
-            status_queue,
-            loader,
-            response,
-        } = &mut *state;
-        match dispatch_packet_with_bpf(packet, truncated, status_queue, loader, response) {
-            PacketOutcome::Response(length) => {
-                snapshot[..length].copy_from_slice(&state.response[..length]);
-                PacketOutcome::Response(length)
+    let outcome = match parse_packet(packet, truncated) {
+        Some(request) => critical_section::with(|cs| {
+            let mut state = PROTOCOL_STATE.borrow(cs).borrow_mut();
+            let map_backing = MAP_BACKING_STORE.borrow(cs).borrow();
+            let ProtocolState {
+                status_queue,
+                loader,
+                response,
+            } = &mut *state;
+            match dispatch_with_bpf(&request, status_queue, loader, &map_backing, response) {
+                PacketOutcome::Response(length) => {
+                    snapshot[..length].copy_from_slice(&state.response[..length]);
+                    PacketOutcome::Response(length)
+                }
+                PacketOutcome::Empty => PacketOutcome::Empty,
+                PacketOutcome::Reset => PacketOutcome::Reset,
             }
-            PacketOutcome::Empty => PacketOutcome::Empty,
-            PacketOutcome::Reset => PacketOutcome::Reset,
-        }
-    });
+        }),
+        None => PacketOutcome::Empty,
+    };
 
     match outcome {
         PacketOutcome::Response(length) => {
@@ -166,6 +171,7 @@ async fn main(_spawner: Spawner) -> ! {
     wch::init_embassy_time_runtime().unwrap();
     let mut flash = FLASH::new(DRV_FLASH_RUNTIME_RESOURCES).unwrap();
     critical_section::with(|cs| {
+        MAP_BACKING_STORE.borrow(cs).borrow_mut().fill(0);
         let mut state = PROTOCOL_STATE.borrow(cs).borrow_mut();
         state
             .loader
@@ -189,9 +195,8 @@ async fn main(_spawner: Spawner) -> ! {
         if RESET_PENDING.load(Ordering::Acquire) {
             system_reset();
         }
-        let load_pending = critical_section::with(|cs| {
-            PROTOCOL_STATE.borrow(cs).borrow().loader.has_pending()
-        });
+        let load_pending =
+            critical_section::with(|cs| PROTOCOL_STATE.borrow(cs).borrow().loader.has_pending());
         if load_pending {
             if !wait_for_i2c_bus_idle() {
                 continue;
