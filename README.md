@@ -131,11 +131,14 @@ size measurement.
 | Image configuration | Flash |
 | --- | ---: |
 | I2C slave baseline | 8,078 bytes |
-| Current release image with retained `sonde-bpf` interpreter and map writes | 23,562 bytes |
-| Remaining below the BPF partition at `0x6000` | 1,014 bytes |
+| Full `sonde-bpf` interpreter with map writes | 23,562 bytes |
+| Release image with only `base32` and `divmul32` conformance groups | 15,166 bytes |
+| Reduction from the full interpreter | 8,396 bytes (35.6%) |
+| Remaining below the BPF partition at `0x6000` | 9,370 bytes |
 
-This probe does not implement BPF loading, helpers, maps, or optical runtime
-execution.
+The firmware selects only the RFC 9669 32-bit ALU (`base32`) and 32-bit
+multiply/divide/modulo (`divmul32`) conformance groups. This probe does not
+implement BPF loading, helpers, maps, or optical runtime execution.
 
 ## Project Status
 
