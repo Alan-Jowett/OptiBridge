@@ -22,6 +22,8 @@
 | VAL-OPT-016 | REQ-OPT-MAP-READ-001 to REQ-OPT-MAP-READ-003, REQ-OPT-MAP-WRITE-001 to REQ-OPT-MAP-WRITE-003 | `cargo test -p optibridge-protocol` | Valid packed-location raw writes preserve sequence, update exactly their one-through-14-byte ranges, and can be read back exactly. Flags, shape, reserved bits, map ID, absent-image, and range errors return their documented statuses without mutation. |
 | VAL-OPT-017 | REQ-OPT-MAP-READ-001 to REQ-OPT-MAP-READ-003 | Hardware through the CDC-I2C bridge | A map longer than 16 bytes is recovered with successive raw byte-range reads; reset restores zero backing for the committed image. |
 | VAL-OPT-018 | REQ-OPT-MAP-WRITE-001 to REQ-OPT-MAP-WRITE-003 | `python tools/test_bpf_loader.py --port <COM>` through the CDC-I2C bridge | A 64-byte map is updated with successive inferred-length packed-location raw writes. Reads return the concatenated updates; reset restores zero backing for the committed image. |
+| VAL-OPT-019 | REQ-OPT-BPF-011, REQ-OPT-BPF-012, REQ-OPT-BPF-016 | `cargo test -p optibridge-protocol` | Validated array descriptors create runtime map metadata only after image commit; malformed, incomplete, or failed images expose no committed maps, and reset restores zeroed volatile backing. |
+| VAL-OPT-020 | REQ-OPT-BPF-013 to REQ-OPT-BPF-015, REQ-OPT-BPF-017 | `cargo test -p optibridge-protocol` plus a firmware release build | A BPF program can use Sonde helper IDs 10 and 11 to look up and update valid array entries. Wrong pointers, sizes, map references, and indices fail deterministically without mutating unrelated state. |
 
 ## Required hardware validation
 
@@ -156,6 +158,13 @@ Reset outcome.
 | REQ-OPT-BPF-008 | VAL-OPT-012 |
 | REQ-OPT-BPF-009 | VAL-OPT-011 |
 | REQ-OPT-BPF-010 | VAL-OPT-001, VAL-OPT-015 |
+| REQ-OPT-BPF-011 | VAL-OPT-019 |
+| REQ-OPT-BPF-012 | VAL-OPT-019 |
+| REQ-OPT-BPF-013 | VAL-OPT-020 |
+| REQ-OPT-BPF-014 | VAL-OPT-020 |
+| REQ-OPT-BPF-015 | VAL-OPT-020 |
+| REQ-OPT-BPF-016 | VAL-OPT-019, VAL-OPT-020 |
+| REQ-OPT-BPF-017 | VAL-OPT-020 |
 | REQ-OPT-MAP-READ-001 | VAL-OPT-016, VAL-OPT-017 |
 | REQ-OPT-MAP-READ-002 | VAL-OPT-016, VAL-OPT-017 |
 | REQ-OPT-MAP-READ-003 | VAL-OPT-016, VAL-OPT-017 |

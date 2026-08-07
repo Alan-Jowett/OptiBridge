@@ -105,7 +105,8 @@ program. Query BPF CRC reports the committed image identity. Read BPF map
 returns a paged raw byte range from a loaded array map. Write BPF map updates
 a paged raw byte range using a packed map ID and offset. After successful
 Start, loading and repeated Start are rejected until reset. Recursive and
-event-triggered execution, helpers, and optical behavior remain out of scope.
+event-triggered execution, helpers other than the approved array-map helpers,
+and optical behavior remain out of scope.
 
 After Reset, a master must wait at least one second before sending another I2C
 request.
@@ -136,14 +137,16 @@ size measurement.
 | --- | ---: |
 | I2C slave baseline | 8,078 bytes |
 | Full `sonde-bpf` interpreter with map writes | 23,562 bytes |
-| Release image with only `base32` and `divmul32` conformance groups | 15,166 bytes |
-| Reduction from the full interpreter | 8,396 bytes (35.6%) |
+| Release image with `base32`, `base64`, and `divmul32` conformance groups | 23,274 bytes |
+| Reduction from the full interpreter | 288 bytes (1.2%) |
 | Remaining below the BPF partition at `0x6000` | 9,410 bytes |
 
-The firmware selects only the RFC 9669 32-bit ALU (`base32`) and 32-bit
+The firmware selects the RFC 9669 32-bit ALU (`base32`), 64-bit instruction
+support needed for map relocations (`base64`), and 32-bit
 multiply/divide/modulo (`divmul32`) conformance groups. The startup size probe
-does not exercise BPF loading, helpers, maps, or optical runtime execution;
-those capabilities are provided by the firmware and protocol runtime.
+does not exercise BPF loading, array-map helpers, maps, or optical runtime
+execution; those capabilities are provided by the firmware and protocol
+runtime.
 
 ## Project Status
 

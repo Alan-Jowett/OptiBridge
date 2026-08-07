@@ -7,10 +7,10 @@ I2C action surface. It implements Reset, Load BPF, Read BPF map, and Write
 BPF map, exposes one remaining action stub, and exposes startup liveness
 through Read Status.
 
-**KNOWN:** BPF execution, verification beyond the startup probe, helpers,
-optical I/O, calibration, interrupts, and a general status-buffer API are not
-implemented and are out of scope. This specification adds the flash-resident
-BPF image loader, image-CRC query, and Read and Write BPF map surfaces.
+**KNOWN:** BPF verification beyond the startup probe, optical I/O, calibration,
+interrupts, and a general status-buffer API are not implemented and are out of
+scope. This specification adds the flash-resident BPF image loader,
+image-CRC query, Read and Write BPF map surfaces, and two array-map helpers.
 
 ## Requirements
 
@@ -170,11 +170,11 @@ runtime state.
 ### REQ-OPT-ACT-005: Start BPF execution
 
 When a validated committed image exists, a valid `CMD_START_BPF` request **MUST**
-invoke that image exactly once with an empty context and no helpers. The
-interpreter return value `0` **MUST** produce a status-only `STATUS_OK`
-response; a nonzero return or interpreter failure **MUST** produce a
-status-only `STATUS_BAD_COMMAND` response. Responses **MUST** retain the
-request sequence.
+invoke that image exactly once with an empty context and the approved array-map
+helpers from `REQ-OPT-BPF-013`. The interpreter return value `0` **MUST**
+produce a status-only `STATUS_OK` response; a nonzero return or interpreter
+failure **MUST** produce a status-only `STATUS_BAD_COMMAND` response.
+Responses **MUST** retain the request sequence.
 
 When no validated committed image exists, Start **MUST** return
 `STATUS_NO_PROGRAM` without invoking the interpreter.
@@ -317,9 +317,11 @@ or loader/running state. Responses **MUST** retain the request sequence.
 
 The loader **MUST** preserve Sonde interpreter prerequisites for later
 execution: eight-byte instruction alignment and non-aliasing, live map-region
-bounds derived from the committed array-map descriptors. It **MUST NOT**
-implement Sonde CBOR encoding, helper registration, verification, map initial
-data, read-only maps, or execution in this change.
+bounds and map relocations derived from the committed array-map descriptors. It
+**MUST NOT**
+implement Sonde CBOR encoding, verification, map initial data, read-only maps,
+or change the existing execution boundary in this change. The approved map
+helper registration is limited to the requirements below.
 
 ### REQ-OPT-BPF-009: Loader statuses
 
@@ -332,6 +334,66 @@ The shared protocol **MUST** define these additional response statuses:
 | `STATUS_BAD_CRC` | `0x07` |
 | `STATUS_FLASH_ERROR` | `0x08` |
 | `STATUS_NO_PROGRAM` | `0x09` |
+
+### REQ-OPT-BPF-011: Runtime array-map creation
+
+Each valid image descriptor **MUST** create one runtime
+`BPF_MAP_TYPE_ARRAY` map before the image becomes executable. The runtime map
+**MUST** retain its declared key size, value size, maximum entry count, and
+fixed backing range. Only four-byte keys are supported.
+
+### REQ-OPT-BPF-012: Atomic map creation
+
+Map creation **MUST** occur only after the complete image, descriptors, bounds,
+and CRC are validated. Failed or incomplete loads **MUST NOT** expose
+partially created maps.
+
+### REQ-OPT-BPF-013: Array-map helper registration
+
+Start execution **MUST** register the pinned Sonde-compatible helper
+descriptors:
+
+| Helper | Sonde ID |
+| --- | ---: |
+| `bpf_map_lookup_elem` | `10` |
+| `bpf_map_update_elem` | `11` |
+
+Helpers **MUST** be available only during BPF execution and **MUST NOT**
+allocate heap memory or mutate flash or unrelated protocol state.
+
+### REQ-OPT-BPF-014: Array-map lookup
+
+`bpf_map_lookup_elem` **MUST** validate the map reference and key pointer. The
+key **MUST** be exactly four bytes and identify an entry in
+`[0, max_entries)`. It **MUST** return a pointer to the entry's value, or null
+for an out-of-range key. Returned pointers **MUST** remain within Sonde's
+validated map-value region.
+
+### REQ-OPT-BPF-015: Array-map update
+
+`bpf_map_update_elem` **MUST** validate the map reference, key pointer, and
+value pointer. It **MUST** require the exact declared key and value sizes and
+an in-range array index.
+
+The helper **MUST** copy the value into the selected entry and return zero on
+success. Invalid maps, pointers, sizes, or indices **MUST** return a
+deterministic negative failure value without escaping the interpreter safety
+boundary.
+
+### REQ-OPT-BPF-016: Map state and reset
+
+Map contents **MUST** remain volatile and fixed-capacity. Maps **MUST** be
+zero-initialized when runtime backing is initialized and after reset,
+preserving the existing reset semantics.
+
+Map helpers **MUST NOT** alter flash image bytes, image CRC, loader state, or
+protocol status storage.
+
+### REQ-OPT-BPF-017: Deterministic helper safety
+
+Map helpers **MUST** be bounded, allocation-free, and compatible with Sonde
+pointer-tagging and region validation. Existing interpreter failures **MUST**
+retain their current `STATUS_BAD_COMMAND` mapping.
 
 ### REQ-OPT-MAP-READ-001: Read BPF map command
 

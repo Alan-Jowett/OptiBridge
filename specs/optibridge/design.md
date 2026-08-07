@@ -12,6 +12,8 @@
 | Sonde probe | Retains the external no-std interpreter and validates a fixed `mov r0, 42; exit` program. |
 | BPF image loader | Streams a compact native image into two reserved flash pages without a page-sized RAM staging buffer. |
 | BPF CRC query | Reports the CRC-32 of a validated committed image without executing it. |
+| BPF runtime maps | Instantiates fixed-size array maps from validated image descriptors in the volatile 1,024-byte backing store. |
+| BPF map helpers | Registers Sonde helper IDs 10 and 11 for array-map lookup and update during Start execution. |
 
 ## Startup sequence
 
@@ -90,9 +92,9 @@ second before its next I2C request. Reset validation errors and all other
 action errors are status-only responses.
 
 Start BPF executes in the bounded I2C request callback before its status-only
-response is queued. It supplies an empty context and no helpers to the
-interpreter, passes the validated map backing ranges, and invokes the image
-once. Return value zero enters the running state and returns `STATUS_OK`;
+response is queued. It supplies an empty context, registers the Sonde array-map
+helpers (IDs 10 and 11), passes the validated map backing ranges, and invokes
+the image once. Return value zero enters the running state and returns `STATUS_OK`;
 nonzero returns or interpreter errors return `STATUS_BAD_COMMAND` without
 entering that state. A running image rejects Start and Load BPF with
 `STATUS_BAD_STATE`, while CRC and map operations retain their read-only or
@@ -116,7 +118,9 @@ the 16-byte `OBPF` v1 header:
 
 The image payload is bytecode followed by 16-byte little-endian map
 descriptors. The CRC-32/ISO-HDLC covers payload bytes only, in that exact
-order. Sonde `BPF_MAP_TYPE_ARRAY` is encoded as `map_type = 1`.
+order. Sonde `BPF_MAP_TYPE_ARRAY` is encoded as `map_type = 1`. A committed
+descriptor creates one fixed-size runtime array map; map creation is atomic
+with image validation and never exposes a partially loaded map.
 
 ```text
 no-image
@@ -150,7 +154,15 @@ writing the commit marker.
 Validated descriptors are laid out consecutively in the fixed 1,024-byte map
 backing store. A descriptor's backing length is `value_size * max_entries`;
 its map ID is its zero-based descriptor index. Backing is zeroed at boot and
-is volatile.
+is volatile. Start registers Sonde helper ID 10
+(`bpf_map_lookup_elem`) and helper ID 11 (`bpf_map_update_elem`).
+
+Array lookup requires a four-byte key containing an in-range array index and
+returns a tagged pointer to the selected value or null for an out-of-range
+index. Array update requires the exact declared key and value sizes, copies
+the value into the selected entry, and returns zero on success or a negative
+failure value. Neither helper allocates, accesses flash, or changes loader
+state. Array-map deletion is intentionally unsupported.
 
 Read BPF map accepts `[map_id, byte_offset_le[0], byte_offset_le[1],
 byte_length]`. It copies the requested one-through-16-byte map-relative range
@@ -217,5 +229,5 @@ bytes of execution stack.
 | Action dispatch | REQ-OPT-FW-005, REQ-OPT-FW-014, REQ-OPT-ACT-001, REQ-OPT-ACT-003 to REQ-OPT-ACT-009, REQ-OPT-BPF-010, REQ-OPT-MAP-WRITE-001 to REQ-OPT-MAP-WRITE-003 |
 | Status storage | REQ-OPT-ACT-002, REQ-OPT-ACT-003, REQ-OPT-ACT-007 |
 | Resource model | REQ-OPT-FW-008 |
-| BPF image, execution, and flash state machine | REQ-OPT-BPF-001 to REQ-OPT-BPF-010 |
-| Map state | REQ-OPT-MAP-READ-001 to REQ-OPT-MAP-READ-003, REQ-OPT-MAP-WRITE-001 to REQ-OPT-MAP-WRITE-003 |
+| BPF image, execution, and flash state machine | REQ-OPT-BPF-001 to REQ-OPT-BPF-017 |
+| Map state and helpers | REQ-OPT-BPF-011 to REQ-OPT-BPF-017, REQ-OPT-MAP-READ-001 to REQ-OPT-MAP-READ-003, REQ-OPT-MAP-WRITE-001 to REQ-OPT-MAP-WRITE-003 |
