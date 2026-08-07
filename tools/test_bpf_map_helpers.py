@@ -8,6 +8,7 @@ import serial
 from test_bpf_loader import (
     CMD_RESET,
     STATUS_OK,
+    STATUS_NO_PROGRAM,
     frame,
     read_map,
     target_request,
@@ -75,8 +76,26 @@ def smoke_test_bytecode():
         insn(EXIT),
     ]
     bytecode = b"".join(instructions)
-    assert len(bytecode) % 8 == 0
+    if len(bytecode) % 8 != 0:
+        raise RuntimeError("smoke-test bytecode is not eight-byte aligned")
     return bytecode
+
+
+def submit_load_step(port, sequence, payload, expected_query_status):
+    response, sequence = target_request(
+        port,
+        sequence,
+        CMD_LOAD_BPF,
+        payload,
+        5,
+    )
+    if response[1:] != bytes((STATUS_OK, 0, (sequence - 2) & 0xFF, 0)):
+        raise RuntimeError(f"load command failed: {response.hex(' ')}")
+
+    response, sequence = wait_ready(port, sequence)
+    if len(response) < 5 or response[1] != expected_query_status:
+        raise RuntimeError(f"load completion failed: {response.hex(' ')}")
+    return response, sequence
 
 
 def load_image(port, sequence, bytecode):
@@ -84,19 +103,16 @@ def load_image(port, sequence, bytecode):
     crc = zlib.crc32(image) & 0xFFFFFFFF
 
     begin = bytes((0,)) + struct.pack("<HB", len(bytecode), 1) + struct.pack("<I", crc)
-    target_write(port, sequence, frame(CMD_LOAD_BPF, sequence, begin))
-    _, sequence = wait_ready(port, sequence + 1)
+    _, sequence = submit_load_step(port, sequence, begin, STATUS_NO_PROGRAM)
 
     # The bridge leaves six even data bytes after the target address and frame header.
     for offset in range(0, len(image), 6):
         fragment = image[offset : offset + 6]
         payload = bytes((1,)) + struct.pack("<H", offset) + fragment
-        target_write(port, sequence, frame(CMD_LOAD_BPF, sequence, payload))
-        _, sequence = wait_ready(port, sequence + 1)
+        _, sequence = submit_load_step(port, sequence, payload, STATUS_NO_PROGRAM)
 
     finalize = bytes((2,))
-    target_write(port, sequence, frame(CMD_LOAD_BPF, sequence, finalize))
-    response, sequence = wait_ready(port, sequence + 1)
+    response, sequence = submit_load_step(port, sequence, finalize, STATUS_OK)
     if response[1] != STATUS_OK or response[2] != 4:
         raise RuntimeError(f"image finalize failed: {response.hex(' ')}")
     actual_crc = struct.unpack("<I", response[5:9])[0]
