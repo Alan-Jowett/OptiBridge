@@ -241,6 +241,39 @@ impl BpfLoader {
         })
     }
 
+    pub fn event_execution_metadata(&self) -> Result<BpfProgramMetadata, u8> {
+        if self.pending.is_some() {
+            return Err(STATUS_BUSY);
+        }
+        match self.state {
+            LoaderState::Committed(_) | LoaderState::Running(_) => {}
+            LoaderState::Empty | LoaderState::Receiving => return Err(STATUS_NO_PROGRAM),
+            LoaderState::Failed(status) => return Err(status),
+        }
+        let mut maps = [BpfMapMetadata {
+            backing_offset: 0,
+            backing_len: 0,
+            key_size: 0,
+            value_size: 0,
+        }; BPF_MAX_MAPS];
+        let mut index = 0;
+        while index < self.committed_map_count as usize {
+            let layout = self.map_layouts[index];
+            maps[index] = BpfMapMetadata {
+                backing_offset: layout.offset,
+                backing_len: layout.len,
+                key_size: layout.key_size,
+                value_size: layout.value_size,
+            };
+            index += 1;
+        }
+        Ok(BpfProgramMetadata {
+            bytecode_len: self.bytecode_len,
+            map_count: self.committed_map_count,
+            maps,
+        })
+    }
+
     pub fn mark_running(&mut self) -> Result<(), u8> {
         match self.state {
             LoaderState::Committed(crc) => {
@@ -842,7 +875,10 @@ where
                 Err(status) => return response(status, request.sequence, &[], output),
             };
             let status = match execute(&metadata, map_backing) {
-                Ok(0) => loader.mark_running().map(|()| STATUS_OK).unwrap_or(STATUS_BAD_STATE),
+                Ok(0) => loader
+                    .mark_running()
+                    .map(|()| STATUS_OK)
+                    .unwrap_or(STATUS_BAD_STATE),
                 Ok(_) | Err(STATUS_BAD_COMMAND) => STATUS_BAD_COMMAND,
                 Err(status) => status,
             };
@@ -868,6 +904,10 @@ fn response(
     PacketOutcome::Response(
         encode_response(status, sequence, 0, payload, output).unwrap_or(HEADER_LEN),
     )
+}
+
+pub fn status_response(status: u8, sequence: u8, output: &mut [u8; MAX_FRAME]) -> PacketOutcome {
+    response(status, sequence, &[], output)
 }
 
 pub fn dispatch_packet(
@@ -1766,8 +1806,8 @@ mod tests {
         request.command = CMD_WRITE_BPF_MAP;
         request.payload_len = 16;
         request.payload[..16].copy_from_slice(&[
-            12, 4, 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab,
-            0xac, 0xad,
+            12, 4, 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac,
+            0xad,
         ]);
         let length = response_length(dispatch_with_bpf(
             &request,
@@ -1780,8 +1820,8 @@ mod tests {
         assert_eq!(
             &map_backing[20..36],
             &[
-                0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac,
-                0xad, 34, 35,
+                0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad,
+                34, 35,
             ]
         );
         assert_eq!(&map_backing[..20], &original_backing[..20]);
@@ -1800,8 +1840,8 @@ mod tests {
         assert_eq!(
             &output[..length],
             &[
-                MAGIC, STATUS_OK, 16, 9, 0, 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
-                0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 34, 35,
+                MAGIC, STATUS_OK, 16, 9, 0, 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8,
+                0xa9, 0xaa, 0xab, 0xac, 0xad, 34, 35,
             ]
         );
 
@@ -1980,10 +2020,7 @@ mod tests {
             &mut map_backing,
             &mut output,
         ));
-        assert_eq!(
-            &output[..length],
-            &[MAGIC, STATUS_NOT_IMPLEMENTED, 0, 9, 0]
-        );
+        assert_eq!(&output[..length], &[MAGIC, STATUS_NOT_IMPLEMENTED, 0, 9, 0]);
     }
 
     #[test]

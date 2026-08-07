@@ -14,6 +14,7 @@
 | BPF CRC query | Reports the CRC-32 of a validated committed image without executing it. |
 | BPF runtime maps | Instantiates fixed-size array maps from validated image descriptors in the volatile 1,024-byte backing store. |
 | BPF map helpers | Registers Sonde helper IDs 10 and 11 for array-map lookup and update during Start execution. |
+| BPF event scheduler | Maintains one replaceable one-shot timer, cancellation state, and a generic bounded event context for deferred BPF invocation. |
 
 ## Startup sequence
 
@@ -30,7 +31,7 @@
 10. Register the I2C RX-packet ISR dispatcher with its static 21-byte receive
    buffer.
 11. Enter the idle loop while I2C interrupts process packets and deferred
-    flash operations.
+    flash operations, and the event runtime dispatches timer work.
 
 USB is not otherwise used by this firmware; its clock configuration is current
 startup behavior.
@@ -94,9 +95,9 @@ action errors are status-only responses.
 Start BPF executes in the bounded I2C request callback before its status-only
 response is queued. It supplies an empty context, registers the Sonde array-map
 helpers (IDs 10 and 11), passes the validated map backing ranges, and invokes
-the image once. Return value zero enters the running state and returns `STATUS_OK`;
-nonzero returns or interpreter errors return `STATUS_BAD_COMMAND` without
-entering that state. A running image rejects Start and Load BPF with
+the image once. Return value zero enters the running state and returns
+`STATUS_OK`; nonzero returns or interpreter errors return `STATUS_BAD_COMMAND`
+without entering that state. A running image rejects Start and Load BPF with
 `STATUS_BAD_STATE`, while CRC and map operations retain their read-only or
 bounded semantics.
 
@@ -186,6 +187,35 @@ descriptors, and a recomputed CRC before treating an image as committed. The
 CRC query reports only this validated committed CRC. A partially programmed
 page is therefore never executable or queryable as a program.
 
+## Timer and generic event execution
+
+The runtime registers OptiBridge-local Sonde helper ID 12 for scheduling and
+helper ID 13 for cancellation. A schedule request carries a bounded delay in
+milliseconds and an opaque `u64` cookie. There is one pending timer; a new
+schedule cancels and replaces the previous timer. Cancellation is idempotent
+and clears the pending timer, cookie, and event-delivery state.
+
+Timer expiry only signals bounded deferred work. It does not execute BPF from
+an interrupt handler, the I2C callback, or a critical section. A serialized
+firmware task or equivalent runtime context validates that the event is still
+current, constructs the 32-byte little-endian event context, and invokes the
+committed image with event kind `1`, context version `1`, the exact cookie at
+offset `8`, and zero timer payload bytes. The interpreter is never re-entered
+concurrently.
+
+The event context is fixed-capacity and extensible: timer events are the only
+implemented source, while future DMA and GPIO sources can provide their own
+source discriminator and 16-byte payload without changing the BPF invocation
+ABI. A monotonically changing generation identifies the current timer. If an
+expiry occurs during BPF execution, one ready event is retained for dispatch
+after the current invocation; cancellation, replacement, or reset invalidates
+that generation and drops the stale event. A timer scheduled by the current
+invocation is a new future event and does not replace the invocation in
+progress.
+Reset invalidates pending timer state and stale wakeups before preserving the
+committed image across restart. Periodic execution is explicit: BPF must
+schedule the next one-shot event during its current invocation.
+
 ## End-to-end smoke test
 
 The host-side smoke test runs through the USB CDC/I2C bridge at target address
@@ -203,7 +233,16 @@ little-endian `41`, starts the image exactly once, and reads back little-endian
 The smoke test treats any transport failure, unexpected status, sequence
 mismatch, short response, failed BPF execution, or map value mismatch as a
 failure. It does not add runtime behavior or exercise recursive or
-event-triggered execution.
+timer-triggered execution.
+
+The timer smoke test is a separate host-side hardware test. It loads a
+4-byte-array-map image that increments the value and schedules helper ID 12
+with a 1,000 millisecond delay and deterministic cookie on every invocation.
+The host starts the image once, periodically reads the map, retries transient
+`STATUS_BUSY` responses, and verifies monotonic progress across at least three
+timer periods without requiring exact dispatch timing. It resets the target
+before and after the observation window. The existing map-helper smoke test
+remains unchanged and independently validates synchronous execution.
 
 ## Status storage
 
@@ -235,9 +274,11 @@ All buffers are statically bounded or stack allocated. The firmware uses
 `no_std`, performs no heap allocation, and obtains the interpreter solely from
 the pinned external `sonde-bpf` dependency. The loader has no 4,096-byte RAM
 page buffer: flash pages are erased once, then programmed in ascending
-halfword-sized fragments. The 1,024-byte map backing store is the only new
-dedicated runtime RAM reservation; final linking must leave at least 4,096
-bytes of execution stack.
+halfword-sized fragments. Timer state, one generic event context, and one
+wakeup record are fixed-capacity runtime state with no heap allocation. The
+1,024-byte map backing store and event scheduler state are dedicated runtime
+RAM reservations; final linking must leave at least 4,096 bytes of execution
+stack.
 
 ## Traceability
 
@@ -246,8 +287,9 @@ bytes of execution stack.
 | Platform and startup | REQ-OPT-FW-001, REQ-OPT-FW-002, REQ-OPT-FW-007 |
 | I2C ISR state machine | REQ-OPT-FW-003, REQ-OPT-FW-004, REQ-OPT-FW-006, REQ-OPT-FW-009 to REQ-OPT-FW-013 |
 | Action dispatch | REQ-OPT-FW-005, REQ-OPT-FW-014, REQ-OPT-ACT-001, REQ-OPT-ACT-003 to REQ-OPT-ACT-009, REQ-OPT-BPF-010, REQ-OPT-MAP-WRITE-001 to REQ-OPT-MAP-WRITE-003 |
-| Status storage | REQ-OPT-ACT-002, REQ-OPT-ACT-003, REQ-OPT-ACT-007 |
+| Status storage | REQ-OPT-ACT-002, REQ-OPT-ACT-003 |
 | Resource model | REQ-OPT-FW-008 |
-| BPF image, execution, and flash state machine | REQ-OPT-BPF-001 to REQ-OPT-BPF-017 |
+| BPF image, execution, and flash state machine | REQ-OPT-BPF-001 to REQ-OPT-BPF-019 |
 | Map state and helpers | REQ-OPT-BPF-011 to REQ-OPT-BPF-017, REQ-OPT-MAP-READ-001 to REQ-OPT-MAP-READ-003, REQ-OPT-MAP-WRITE-001 to REQ-OPT-MAP-WRITE-003 |
-| End-to-end smoke test | REQ-OPT-VAL-021 to REQ-OPT-VAL-024 |
+| Timer and event scheduler | REQ-OPT-ACT-007, REQ-OPT-BPF-018 to REQ-OPT-BPF-019, REQ-OPT-TMR-001 to REQ-OPT-TMR-009, REQ-OPT-EVT-001 to REQ-OPT-EVT-002 |
+| End-to-end smoke test | REQ-OPT-VAL-021 to REQ-OPT-VAL-031 |

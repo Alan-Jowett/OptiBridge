@@ -7,7 +7,7 @@
 | VAL-OPT-001 | REQ-OPT-FW-003, REQ-OPT-FW-004, REQ-OPT-FW-011, REQ-OPT-ACT-001, REQ-OPT-ACT-004 to REQ-OPT-ACT-009, REQ-OPT-BPF-010 | `cargo test -p optibridge-protocol` | Valid Reset returns the terminal Reset outcome; invalid Reset returns its error response without consuming status. Start validates its request shape, invokes an image once on success, maps execution results, enters running, and preserves packet-dispatch behavior. |
 | VAL-OPT-002 | REQ-OPT-ACT-002, REQ-OPT-ACT-003 | `cargo test -p optibridge-protocol` | Read Status returns `ready` with the request sequence, then consumes it; the next read returns `STATUS_OK` with an empty payload. |
 | VAL-OPT-003 | REQ-OPT-FW-001, REQ-OPT-FW-002, REQ-OPT-FW-006, REQ-OPT-FW-007, REQ-OPT-FW-014 | `cargo xtask generate-hal` followed by `cargo build --release -p optibridge-firmware --target riscv32imc-unknown-none-elf --features firmware` | The pinned generated HAL exposes `interrupt::system_reset`; firmware compiles and links with it, status storage, and the Sonde probe. |
-| VAL-OPT-004 | REQ-OPT-FW-008, REQ-OPT-ACT-007 | `cargo xtask size` | OptiBridge release image is at or below 24,576 bytes; the bridge image remains at or below its full 32,768-byte device-flash capacity. |
+| VAL-OPT-004 | REQ-OPT-FW-008 | `cargo xtask size` | OptiBridge release image is at or below 24,576 bytes; the bridge image remains at or below its full 32,768-byte device-flash capacity. |
 | VAL-OPT-005 | REQ-OPT-FW-009 to REQ-OPT-FW-011 | Hardware through the CDC-I2C bridge | One target reset is followed by two Read Status requests, a valid Start, a repeated Start, and a Load attempt while running; every response completes without another target reset. |
 | VAL-OPT-006 | REQ-OPT-FW-003, REQ-OPT-FW-004, REQ-OPT-FW-006 | Hardware through the CDC-I2C bridge | An incomplete or bad-length request queues no protocol response; the immediately following valid request succeeds. |
 | VAL-OPT-007 | REQ-OPT-FW-013 | Hardware through the CDC-I2C bridge | Two valid writes without an intervening read leave only the later response in the generated slot. |
@@ -25,6 +25,9 @@
 | VAL-OPT-019 | REQ-OPT-BPF-011, REQ-OPT-BPF-012, REQ-OPT-BPF-016 | `cargo test -p optibridge-protocol` | Validated array descriptors create runtime map metadata only after image commit; malformed, incomplete, or failed images expose no committed maps, and reset restores zeroed volatile backing. |
 | VAL-OPT-020 | REQ-OPT-BPF-013 to REQ-OPT-BPF-015, REQ-OPT-BPF-017 | `cargo test -p optibridge-protocol` plus a firmware release build | A BPF program can use Sonde helper IDs 10 and 11 to look up and update valid array entries. Wrong pointers, sizes, map references, and indices fail deterministically without mutating unrelated state. |
 | VAL-OPT-021 | REQ-OPT-VAL-021 to REQ-OPT-VAL-024 | `python tools/test_bpf_map_helpers.py --port <COM>` through the CDC-I2C bridge | The smoke test resets the target, loads the helper-calling image, observes an initially zero map entry, writes 41, starts the image once, and observes 42. Transport, status, sequence, execution, and value failures fail the test. |
+| VAL-OPT-022 | REQ-OPT-BPF-018 to REQ-OPT-BPF-019, REQ-OPT-TMR-001 to REQ-OPT-TMR-009, REQ-OPT-EVT-001 to REQ-OPT-EVT-002 | `cargo test -p optibridge-protocol` plus targeted firmware runtime tests | Schedule helper ID 12 and cancel helper ID 13 enforce argument validation, replacement, idempotent cancellation, one-shot behavior, exact 32-byte context encoding (`event_kind=1`, `version=1`, `u64` cookie at offset 8), stale-generation suppression, reset cancellation, deferred readiness, non-reentrancy, and preservation of synchronous Start behavior. |
+| VAL-OPT-023 | REQ-OPT-TMR-003 to REQ-OPT-TMR-009, REQ-OPT-EVT-001 | Firmware release build plus hardware timer validation | A scheduled timer invokes the committed BPF image once outside interrupt/I2C context with the specified event context; cancellation, replacement, reset, expiry during active execution, and explicit self-rescheduling behave deterministically without stale or concurrent invocation. |
+| VAL-OPT-024 | REQ-OPT-VAL-025 to REQ-OPT-VAL-031 | `python tools/test_bpf_timer.py --port <COM>` through the CDC-I2C bridge | The timer smoke test loads a map-incrementing, self-rescheduling image, starts it once, observes at least three monotonic increments over the default window, retries transient `STATUS_BUSY`, reports failures with observed progress, and resets before and after execution. |
 
 ## Required hardware validation
 
@@ -146,7 +149,7 @@ Reset outcome.
 | REQ-OPT-ACT-004 | VAL-OPT-001, request-error hardware validation |
 | REQ-OPT-ACT-005 | VAL-OPT-001, VAL-OPT-015 |
 | REQ-OPT-ACT-006 | VAL-OPT-001, request-error hardware validation |
-| REQ-OPT-ACT-007 | VAL-OPT-004 |
+| REQ-OPT-ACT-007 | VAL-OPT-022, VAL-OPT-023 |
 | REQ-OPT-ACT-008 | VAL-OPT-001, VAL-OPT-009 |
 | REQ-OPT-ACT-009 | VAL-OPT-001, VAL-OPT-010 |
 | REQ-OPT-BPF-001 | VAL-OPT-012, VAL-OPT-013 |
@@ -166,6 +169,19 @@ Reset outcome.
 | REQ-OPT-BPF-015 | VAL-OPT-020 |
 | REQ-OPT-BPF-016 | VAL-OPT-019, VAL-OPT-020 |
 | REQ-OPT-BPF-017 | VAL-OPT-020 |
+| REQ-OPT-BPF-018 | VAL-OPT-022 |
+| REQ-OPT-BPF-019 | VAL-OPT-022 |
+| REQ-OPT-TMR-001 | VAL-OPT-022, VAL-OPT-023 |
+| REQ-OPT-TMR-002 | VAL-OPT-022 |
+| REQ-OPT-TMR-003 | VAL-OPT-022, VAL-OPT-023 |
+| REQ-OPT-TMR-004 | VAL-OPT-023 |
+| REQ-OPT-TMR-005 | VAL-OPT-022, VAL-OPT-023 |
+| REQ-OPT-TMR-006 | VAL-OPT-022, VAL-OPT-023 |
+| REQ-OPT-TMR-007 | VAL-OPT-022, VAL-OPT-023 |
+| REQ-OPT-TMR-008 | VAL-OPT-022 |
+| REQ-OPT-TMR-009 | VAL-OPT-022, VAL-OPT-023 |
+| REQ-OPT-EVT-001 | VAL-OPT-022, VAL-OPT-023 |
+| REQ-OPT-EVT-002 | VAL-OPT-022 |
 | REQ-OPT-MAP-READ-001 | VAL-OPT-016, VAL-OPT-017 |
 | REQ-OPT-MAP-READ-002 | VAL-OPT-016, VAL-OPT-017 |
 | REQ-OPT-MAP-READ-003 | VAL-OPT-016, VAL-OPT-017 |
@@ -176,3 +192,10 @@ Reset outcome.
 | REQ-OPT-VAL-022 | VAL-OPT-021 |
 | REQ-OPT-VAL-023 | VAL-OPT-021 |
 | REQ-OPT-VAL-024 | VAL-OPT-021 |
+| REQ-OPT-VAL-025 | VAL-OPT-024 |
+| REQ-OPT-VAL-026 | VAL-OPT-024 |
+| REQ-OPT-VAL-027 | VAL-OPT-024 |
+| REQ-OPT-VAL-028 | VAL-OPT-024 |
+| REQ-OPT-VAL-029 | VAL-OPT-024 |
+| REQ-OPT-VAL-030 | VAL-OPT-024 |
+| REQ-OPT-VAL-031 | VAL-OPT-024 |

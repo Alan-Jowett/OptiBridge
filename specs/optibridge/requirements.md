@@ -10,7 +10,8 @@ through Read Status.
 **KNOWN:** BPF verification beyond the startup probe, optical I/O, calibration,
 interrupts, and a general status-buffer API are not implemented and are out of
 scope. This specification adds the flash-resident BPF image loader,
-image-CRC query, Read and Write BPF map surfaces, and two array-map helpers.
+image-CRC query, Read and Write BPF map surfaces, two array-map helpers, and
+timer-driven BPF event execution.
 
 ## Requirements
 
@@ -195,12 +196,13 @@ committed image and CRC.
 Commands outside the seven defined action values **MUST** return status-only
 `STATUS_BAD_COMMAND` and retain the request sequence.
 
-### REQ-OPT-ACT-007: Deferred action semantics
+### REQ-OPT-ACT-007: Deferred event execution semantics
 
-Recursive execution and GPIO, DMA, timer, interrupt, or other event-triggered
-BPF invocation **MUST NOT** be introduced by this change. Optical behavior,
-additional status enqueue sources, and a general circular-status-buffer API
-remain out of scope.
+Timer-triggered BPF invocation **MAY** be introduced only through the approved
+timer helpers and event context requirements below. GPIO, DMA, optical, and
+other event sources remain out of scope. Event-triggered execution **MUST NOT**
+change the existing I2C command surface or introduce recursive interpreter
+entry.
 
 ### REQ-OPT-ACT-008: Immediate Reset
 
@@ -395,6 +397,110 @@ Map helpers **MUST** be bounded, allocation-free, and compatible with Sonde
 pointer-tagging and region validation. Existing interpreter failures **MUST**
 retain their current `STATUS_BAD_COMMAND` mapping.
 
+### REQ-OPT-BPF-018: One-shot timer scheduling helper
+
+The firmware **MUST** register an OptiBridge-local Sonde-compatible helper with
+ID `12` for one-shot timer scheduling. The helper **MUST** accept a bounded
+`u32` delay in milliseconds and an opaque `u64` cookie. It **MUST** be
+available only during BPF execution, **MUST NOT** allocate heap memory, and
+**MUST NOT** invoke BPF recursively.
+
+### REQ-OPT-BPF-019: Timer cancellation helper
+
+The firmware **MUST** register an OptiBridge-local Sonde-compatible helper with
+ID `13` for timer cancellation. The helper **MUST** accept no arguments, cancel
+and clear the pending timer and its event state, and return zero. Calling it
+when no timer is pending **MUST** also return zero.
+
+### REQ-OPT-TMR-001: Timer replacement and one-shot behavior
+
+An accepted schedule request **MUST** replace and cancel the existing pending
+timer. Each accepted request **MUST** produce at most one timer event and
+**MUST NOT** repeat implicitly. Periodic execution **MAY** be achieved only by
+explicitly scheduling the next one-shot timer from BPF.
+
+### REQ-OPT-TMR-002: Timer delay validation
+
+The firmware **MUST** accept delays from `0` through `u32::MAX` milliseconds,
+with zero meaning dispatch at the next available scheduler opportunity. A
+delay outside that representable range is invalid by construction. Timer
+backend failures **MUST** return a deterministic negative helper failure and
+**MUST** preserve the currently pending timer.
+
+### REQ-OPT-TMR-003: Generic event context
+
+Timer expiry **MUST** invoke BPF with a fixed 32-byte context encoded as:
+
+| Offset | Size | Field |
+| ---: | ---: | --- |
+| `0` | 4 | event kind, `1` for timer |
+| `4` | 4 | context version, `1` |
+| `8` | 8 | exact `u64` cookie |
+| `16` | 16 | source-specific payload, zero for timer |
+
+All multi-byte fields **MUST** be little-endian. The context representation
+**MUST** reserve the payload region for future DMA-completion and
+GPIO-interrupt events without changing the BPF invocation ABI.
+
+### REQ-OPT-TMR-004: Deferred timer execution
+
+Timer expiry **MUST NOT** execute BPF from an interrupt handler, I2C callback,
+or critical section. Expiry **MUST** signal bounded work to a firmware task or
+equivalent runtime context, which then invokes BPF.
+
+### REQ-OPT-TMR-005: Non-reentrant event execution
+
+The firmware **MUST NOT** execute two BPF invocations concurrently or re-enter
+the interpreter while an invocation is active. If a timer expires while BPF is
+active, the firmware **MUST** retain one ready event and dispatch it only after
+the active invocation completes. The ready event **MUST** be discarded if its
+generation was canceled, replaced, or reset. A timer scheduled by the active
+invocation applies to a future event and **MUST NOT** replace the invocation
+already in progress.
+
+### REQ-OPT-TMR-006: Reset and image lifecycle
+
+Reset **MUST** cancel the pending timer and clear event-delivery state while
+preserving the committed image and CRC. A stale timer or wakeup from before
+reset **MUST NOT** invoke BPF afterward. Scheduling **MUST** require a
+validated executable image.
+
+### REQ-OPT-TMR-007: Cookie integrity
+
+The `u64` cookie **MUST** pass from schedule request to BPF event context
+without truncation or reinterpretation.
+
+### REQ-OPT-TMR-008: Fixed timer resources
+
+Timer state, event context, and wakeup signaling **MUST** use fixed-capacity,
+allocation-free storage for one pending timer. Resource exhaustion or an
+unavailable timer **MUST** return a deterministic helper failure without
+overwriting unrelated state.
+
+### REQ-OPT-TMR-009: Cancellation and stale wakeups
+
+Cancellation **MUST** prevent BPF invocation even if a timer wakeup has
+already been issued but not yet dispatched. Replacement scheduling and reset
+**MUST** apply the same stale-wakeup suppression.
+
+The implementation **MUST** use a generation or equivalent identity so that
+only the current timer event can be dispatched. Cancellation **MUST NOT**
+interrupt an invocation already in progress, but **MUST** clear any pending or
+ready event that has not started.
+
+### REQ-OPT-EVT-001: Future event-source compatibility
+
+The event-delivery abstraction **MUST** represent the source and payload of an
+event generically. This change **MUST** implement timer events only; GPIO,
+DMA, optical, and other event sources **MUST** remain unimplemented.
+
+### REQ-OPT-EVT-002: Existing Start compatibility
+
+Synchronous `CMD_START_BPF` **MUST** retain its existing single-invocation
+behavior, empty initial context, response statuses, and running-state
+semantics. Timer helpers **MUST NOT** add a timer command or alter existing
+map-helper behavior.
+
 ### REQ-OPT-MAP-READ-001: Read BPF map command
 
 `CMD_READ_BPF_MAP` **MUST** require zero flags and exactly four payload bytes:
@@ -495,9 +601,52 @@ complete. It **MUST** then perform these operations in order:
 
 The test **MUST NOT** rely on a pre-existing image or map contents.
 
-### REQ-OPT-VAL-024: Smoke-test scope
+### REQ-OPT-VAL-024: Existing map-helper smoke-test scope
 
-The smoke test **MUST NOT** introduce recursive or event-triggered execution,
-new helper IDs, new map types, map deletion semantics, or production
-protocol behavior outside the already specified load, map, and Start command
-surfaces.
+The existing synchronous map-helper smoke test **MUST NOT** introduce
+recursive or timer-triggered execution, new map types, map deletion semantics,
+or production protocol behavior outside the already specified load, map, and
+Start command surfaces. The separate timer smoke test is governed by
+REQ-OPT-VAL-025 through REQ-OPT-VAL-031.
+
+### REQ-OPT-VAL-025: Timer smoke-test image
+
+The timer hardware smoke test **MUST** load a valid BPF image containing one
+4-byte array map and using map helpers `10` and `11`. The image **MUST** update
+the map value once per invocation and schedule its next invocation with helper
+`12`, a delay of `1000` milliseconds, and a deterministic cookie.
+
+### REQ-OPT-VAL-026: Single host start
+
+The timer smoke test **MUST** invoke `CMD_START_BPF` exactly once. Every later
+BPF invocation **MUST** be caused by explicit one-shot timer rescheduling from
+the BPF program.
+
+### REQ-OPT-VAL-027: Timer progress observation
+
+The host **MUST** periodically read the map and verify monotonic increments
+across multiple timer periods without requiring exact wall-clock dispatch
+times. The test **MUST** observe at least three increments during its default
+observation window.
+
+### REQ-OPT-VAL-028: Busy-read tolerance
+
+The timer smoke test **MUST** retry map reads that return `STATUS_BUSY` during
+BPF execution. Transient busy responses **MUST NOT** be treated as timer or
+transport failures.
+
+### REQ-OPT-VAL-029: Timer smoke-test failure handling
+
+The test **MUST** fail on missed increments, unexpected decreases, malformed
+responses, transport errors, or unexpected BPF/helper failures. It **MUST**
+report the observed value and expected progress when failing.
+
+### REQ-OPT-VAL-030: Timer smoke-test isolation
+
+The timer smoke test **MUST** reset the target before and after execution so
+that pending timer state does not leak into later tests.
+
+### REQ-OPT-VAL-031: Existing smoke-test preservation
+
+The existing synchronous map-helper smoke test **MUST** retain its `0 -> 41 ->
+42` behavior and remain independently runnable.

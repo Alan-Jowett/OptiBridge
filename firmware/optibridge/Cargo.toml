@@ -23,6 +23,7 @@ ch32v203g6u6-embassy-hal = { package = "ch32v203g6u6-embassy-hal", path = "../..
 critical-section = "1.2"
 embedded-storage = "0.3"
 embassy-executor = { version = "0.7.0", features = ["arch-spin", "executor-thread"] }
+embassy-time = { version = "0.5.1", features = ["tick-hz-1_000"] }
 riscv = { version = "0.12", features = ["critical-section-single-hart"] }
 riscv-rt = "0.13"
 sonde-bpf = { git = "https://github.com/Alan-Jowett/sonde.git", rev = "ac61447d3294f49711038edfb1fa3520c45fed6b", default-features = false, features = ["base32", "base64", "divmul32", "stack-512"] }
