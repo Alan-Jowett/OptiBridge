@@ -53,7 +53,9 @@ def target_request(port, sequence, command, payload, response_length):
         (sequence + 1) & 0xFF,
         bytes((TARGET_ADDRESS, response_length)),
     )
-    if len(response) != response_length:
+    if len(response) != response_length and not (
+        len(response) == 5 and response[1] == STATUS_BUSY
+    ):
         raise RuntimeError(f"short target response: {response.hex(' ')}")
     if response[:1] != bytes((MAGIC,)) or response[3] != sequence or response[4] != 0:
         raise RuntimeError(f"invalid target response: {response.hex(' ')}")
@@ -96,16 +98,18 @@ def write_map(port, sequence, map_id, byte_offset, data):
 def read_map(port, sequence, map_id, byte_offset, byte_length):
     if not 1 <= byte_length <= 11:
         raise ValueError("bridge map-read pages must contain one through 11 bytes")
-    response, sequence = target_request(
-        port,
-        sequence,
-        CMD_READ_BPF_MAP,
-        bytes((map_id,)) + struct.pack("<HB", byte_offset, byte_length),
-        5 + byte_length,
-    )
-    if response[1] != STATUS_OK or response[2] != byte_length:
-        raise RuntimeError(f"map read failed: {response.hex(' ')}")
-    return response[5:], sequence
+    payload = bytes((map_id,)) + struct.pack("<HB", byte_offset, byte_length)
+    for _ in range(100):
+        response, sequence = target_request(
+            port, sequence, CMD_READ_BPF_MAP, payload, 5 + byte_length
+        )
+        if response[1] == STATUS_BUSY:
+            time.sleep(0.02)
+            continue
+        if response[1] != STATUS_OK or response[2] != byte_length:
+            raise RuntimeError(f"map read failed: {response.hex(' ')}")
+        return response[5:], sequence
+    raise RuntimeError("target remained busy during map read")
 
 
 def main():

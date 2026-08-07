@@ -386,6 +386,7 @@ dependencies = [
  "ch32v203g6u6-embassy-hal",
  "critical-section",
  "embassy-executor",
+ "embassy-time",
  "embedded-storage",
  "optibridge-protocol",
  "riscv",

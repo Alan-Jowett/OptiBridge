@@ -20,12 +20,13 @@ use ch32v203g6u6_embassy_hal::{
 };
 use critical_section::Mutex;
 use embassy_executor::Spawner;
+use embassy_time::{Duration, Instant, Timer};
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use optibridge_firmware::map_helpers::{HELPER_ERROR, value_range};
 use optibridge_protocol::{
     BPF_FLASH_OFFSET, BPF_HEADER_SIZE, BPF_MAX_MAP_BYTES, BPF_MAX_MAPS, BpfFlash, BpfLoader,
-    BpfProgramMetadata, MAX_FRAME, PacketOutcome, STATUS_BAD_COMMAND, StatusQueue,
-    dispatch_with_bpf_and_executor, parse_packet,
+    BpfProgramMetadata, CMD_RESET, MAX_FRAME, PacketOutcome, STATUS_BAD_COMMAND, STATUS_BUSY,
+    StatusQueue, dispatch_with_bpf_and_executor, parse_packet, status_response,
 };
 use sonde_bpf::interpreter::{HelperDescriptor, HelperReturn};
 
@@ -46,6 +47,9 @@ const BPF_SIZE_PROBE: [u8; 16] = [
 ];
 const BPF_RAM_START: u64 = 0x2000_0000;
 const BPF_RAM_END: u64 = BPF_RAM_START + 10 * 1024;
+const TIMER_EVENT_KIND: u32 = 1;
+const TIMER_CONTEXT_VERSION: u32 = 1;
+const TIMER_CONTEXT_LEN: usize = 32;
 
 struct ProtocolState {
     status_queue: StatusQueue,
@@ -71,7 +75,9 @@ static mut I2C_RX_BUFFER: [u8; MAX_FRAME] = [0; MAX_FRAME];
 static MAP_BACKING_STORE: Mutex<RefCell<[u8; BPF_MAX_MAP_BYTES]>> =
     Mutex::new(RefCell::new([0; BPF_MAX_MAP_BYTES]));
 static RESET_PENDING: AtomicBool = AtomicBool::new(false);
+static BPF_EXECUTION_ACTIVE: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(false));
 static mut ACTIVE_MAP_HELPERS: Option<ActiveMapHelpers> = None;
+static TIMER_STATE: Mutex<RefCell<TimerState>> = Mutex::new(RefCell::new(TimerState::new()));
 
 const MAP_LOOKUP_HELPER_ID: u32 = 10;
 const MAP_UPDATE_HELPER_ID: u32 = 11;
@@ -80,6 +86,35 @@ const MAP_UPDATE_HELPER_ID: u32 = 11;
 struct ActiveMapHelpers {
     backing: *mut u8,
     metadata: BpfProgramMetadata,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct TimerRequest {
+    generation: u32,
+    deadline: Instant,
+    cookie: u64,
+}
+
+#[derive(Clone, Copy)]
+struct TimerEvent {
+    generation: u32,
+    cookie: u64,
+}
+
+struct TimerState {
+    generation: u32,
+    pending: Option<TimerRequest>,
+    ready: Option<TimerEvent>,
+}
+
+impl TimerState {
+    const fn new() -> Self {
+        Self {
+            generation: 0,
+            pending: None,
+            ready: None,
+        }
+    }
 }
 
 struct FlashStorage<'a>(&'a mut FLASH);
@@ -121,6 +156,108 @@ fn wait_for_i2c_bus_idle() -> bool {
     false
 }
 
+fn next_timer_generation(state: &mut TimerState) -> u32 {
+    state.generation = state.generation.wrapping_add(1);
+    if state.generation == 0 {
+        state.generation = 1;
+    }
+    state.generation
+}
+
+fn try_claim_bpf_execution() -> bool {
+    critical_section::with(|cs| {
+        let mut active = BPF_EXECUTION_ACTIVE.borrow(cs).borrow_mut();
+        if *active {
+            false
+        } else {
+            *active = true;
+            true
+        }
+    })
+}
+
+fn release_bpf_execution() {
+    critical_section::with(|cs| {
+        *BPF_EXECUTION_ACTIVE.borrow(cs).borrow_mut() = false;
+    });
+}
+
+fn bpf_execution_active() -> bool {
+    critical_section::with(|cs| *BPF_EXECUTION_ACTIVE.borrow(cs).borrow())
+}
+
+fn bpf_schedule_timer(delay_ms: u64, cookie: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
+    if delay_ms > u32::MAX as u64 {
+        return HELPER_ERROR;
+    }
+    critical_section::with(|cs| {
+        let mut state = TIMER_STATE.borrow(cs).borrow_mut();
+        let generation = next_timer_generation(&mut state);
+        state.ready = None;
+        state.pending = Some(TimerRequest {
+            generation,
+            deadline: Instant::now() + Duration::from_millis(delay_ms),
+            cookie,
+        });
+    });
+    0
+}
+
+fn bpf_cancel_timer(_r1: u64, _r2: u64, _r3: u64, _r4: u64, _r5: u64) -> u64 {
+    critical_section::with(|cs| {
+        let mut state = TIMER_STATE.borrow(cs).borrow_mut();
+        next_timer_generation(&mut state);
+        state.pending = None;
+        state.ready = None;
+    });
+    0
+}
+
+fn poll_timer() {
+    critical_section::with(|cs| {
+        let mut state = TIMER_STATE.borrow(cs).borrow_mut();
+        if let Some(pending) = state.pending {
+            if Instant::now() >= pending.deadline {
+                state.pending = None;
+                state.ready = Some(TimerEvent {
+                    generation: pending.generation,
+                    cookie: pending.cookie,
+                });
+            }
+        }
+    });
+}
+
+fn wait_for_timer_or_work() -> Duration {
+    critical_section::with(|cs| {
+        let state = TIMER_STATE.borrow(cs).borrow();
+        match state.pending {
+            Some(pending) => {
+                let now = Instant::now();
+                if pending.deadline <= now {
+                    Duration::from_millis(0)
+                } else {
+                    core::cmp::min(pending.deadline - now, Duration::from_millis(1))
+                }
+            }
+            None => Duration::from_millis(1),
+        }
+    })
+}
+
+fn take_ready_timer() -> Option<TimerEvent> {
+    critical_section::with(|cs| TIMER_STATE.borrow(cs).borrow_mut().ready.take())
+}
+
+fn restore_ready_timer(event: TimerEvent) {
+    critical_section::with(|cs| {
+        let mut state = TIMER_STATE.borrow(cs).borrow_mut();
+        if state.generation == event.generation && state.ready.is_none() {
+            state.ready = Some(event);
+        }
+    });
+}
+
 #[inline(never)]
 fn run_bpf_size_probe() {
     let helpers: &[sonde_bpf::interpreter::HelperDescriptor] = &[];
@@ -139,7 +276,9 @@ fn run_bpf_size_probe() {
 
 fn execute_loaded_bpf(
     metadata: &BpfProgramMetadata,
-    map_backing: &mut [u8; BPF_MAX_MAP_BYTES],
+    map_backing: *mut u8,
+    context: &mut [u8],
+    read_only_context: bool,
 ) -> Result<u64, u8> {
     let mut maps = [sonde_bpf::interpreter::MapRegion {
         relocated_ptr: 0,
@@ -150,11 +289,7 @@ fn execute_loaded_bpf(
     }; BPF_MAX_MAPS];
     for (index, map) in maps[..metadata.map_count as usize].iter_mut().enumerate() {
         let descriptor = metadata.maps[index];
-        let backing = unsafe {
-            map_backing
-                .as_mut_ptr()
-                .add(descriptor.backing_offset as usize)
-        };
+        let backing = unsafe { map_backing.add(descriptor.backing_offset as usize) };
         let start = backing as u64;
         let end = start + descriptor.backing_len as u64;
         *map = sonde_bpf::interpreter::MapRegion {
@@ -172,7 +307,6 @@ fn execute_loaded_bpf(
             metadata.bytecode_len as usize,
         )
     };
-    let mut context = [];
     let helpers = [
         HelperDescriptor {
             id: MAP_LOOKUP_HELPER_ID,
@@ -184,20 +318,30 @@ fn execute_loaded_bpf(
             func: bpf_map_update_elem,
             ret: HelperReturn::Scalar,
         },
+        HelperDescriptor {
+            id: 12,
+            func: bpf_schedule_timer,
+            ret: HelperReturn::Scalar,
+        },
+        HelperDescriptor {
+            id: 13,
+            func: bpf_cancel_timer,
+            ret: HelperReturn::Scalar,
+        },
     ];
     unsafe {
         ACTIVE_MAP_HELPERS = Some(ActiveMapHelpers {
-            backing: map_backing.as_mut_ptr(),
+            backing: map_backing,
             metadata: *metadata,
         });
     }
     let result = unsafe {
         sonde_bpf::interpreter::execute_program(
             program,
-            &mut context,
+            context,
             &helpers,
             &maps[..metadata.map_count as usize],
-            false,
+            read_only_context,
             sonde_bpf::interpreter::UNLIMITED_BUDGET,
             &[],
         )
@@ -206,6 +350,42 @@ fn execute_loaded_bpf(
         ACTIVE_MAP_HELPERS = None;
     }
     result.map_err(|_| STATUS_BAD_COMMAND)
+}
+
+fn execute_timer_event(event: TimerEvent) {
+    if !try_claim_bpf_execution() {
+        restore_ready_timer(event);
+        return;
+    }
+
+    let current =
+        critical_section::with(|cs| TIMER_STATE.borrow(cs).borrow().generation == event.generation);
+    if !current {
+        release_bpf_execution();
+        return;
+    }
+
+    let metadata = critical_section::with(|cs| {
+        PROTOCOL_STATE
+            .borrow(cs)
+            .borrow()
+            .loader
+            .event_execution_metadata()
+            .ok()
+    });
+    let Some(metadata) = metadata else {
+        release_bpf_execution();
+        return;
+    };
+
+    let map_backing =
+        critical_section::with(|cs| MAP_BACKING_STORE.borrow(cs).borrow_mut().as_mut_ptr());
+    let mut context = [0; TIMER_CONTEXT_LEN];
+    context[0..4].copy_from_slice(&TIMER_EVENT_KIND.to_le_bytes());
+    context[4..8].copy_from_slice(&TIMER_CONTEXT_VERSION.to_le_bytes());
+    context[8..16].copy_from_slice(&event.cookie.to_le_bytes());
+    let _ = execute_loaded_bpf(&metadata, map_backing, &mut context, true);
+    release_bpf_execution();
 }
 
 fn bpf_map_layout(map: u64, state: &ActiveMapHelpers) -> Option<(usize, u32, u32, usize)> {
@@ -300,6 +480,18 @@ fn panic(_info: &PanicInfo<'_>) -> ! {
 fn on_i2c_packet(packet: &[u8], truncated: bool) {
     let mut snapshot = [0; MAX_FRAME];
     let outcome = match parse_packet(packet, truncated) {
+        Some(request) if bpf_execution_active() && request.command != CMD_RESET => {
+            critical_section::with(|cs| {
+                let mut state = PROTOCOL_STATE.borrow(cs).borrow_mut();
+                let length =
+                    match status_response(STATUS_BUSY, request.sequence, &mut state.response) {
+                        PacketOutcome::Response(length) => length,
+                        _ => 0,
+                    };
+                snapshot[..length].copy_from_slice(&state.response[..length]);
+                PacketOutcome::Response(length)
+            })
+        }
         Some(request) => critical_section::with(|cs| {
             let mut state = PROTOCOL_STATE.borrow(cs).borrow_mut();
             let mut map_backing = MAP_BACKING_STORE.borrow(cs).borrow_mut();
@@ -314,7 +506,16 @@ fn on_i2c_packet(packet: &[u8], truncated: bool) {
                 loader,
                 &mut map_backing,
                 response,
-                execute_loaded_bpf,
+                |metadata, map_backing| {
+                    if !try_claim_bpf_execution() {
+                        return Err(STATUS_BUSY);
+                    }
+                    let mut context = [];
+                    let result =
+                        execute_loaded_bpf(metadata, map_backing.as_mut_ptr(), &mut context, false);
+                    release_bpf_execution();
+                    result
+                },
             ) {
                 PacketOutcome::Response(length) => {
                     snapshot[..length].copy_from_slice(&state.response[..length]);
@@ -366,7 +567,6 @@ async fn main(_spawner: Spawner) -> ! {
     i2c.set_own_address_7bit(0x42).unwrap();
     i2c.enable_rx_packet_isr_dispatch(unsafe { &mut *addr_of_mut!(I2C_RX_BUFFER) }, on_i2c_packet)
         .unwrap();
-
     loop {
         if RESET_PENDING.load(Ordering::Acquire) {
             system_reset();
@@ -375,6 +575,7 @@ async fn main(_spawner: Spawner) -> ! {
             critical_section::with(|cs| PROTOCOL_STATE.borrow(cs).borrow().loader.has_pending());
         if load_pending {
             if !wait_for_i2c_bus_idle() {
+                Timer::after_millis(1).await;
                 continue;
             }
         }
@@ -382,6 +583,10 @@ async fn main(_spawner: Spawner) -> ! {
             let mut state = PROTOCOL_STATE.borrow(cs).borrow_mut();
             state.loader.execute_pending(&mut FlashStorage(&mut flash));
         });
-        core::hint::spin_loop();
+        poll_timer();
+        if let Some(event) = take_ready_timer() {
+            execute_timer_event(event);
+        }
+        Timer::after(wait_for_timer_or_work()).await;
     }
 }
