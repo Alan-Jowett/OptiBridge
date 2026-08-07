@@ -511,7 +511,7 @@ dependencies = [
 [[package]]
 name = "sonde-bpf"
 version = "0.8.0"
-source = "git+https://github.com/Alan-Jowett/sonde.git?rev=29ee7c06070d8a677b7cd50f3de6d501f635e128#29ee7c06070d8a677b7cd50f3de6d501f635e128"
+source = "git+https://github.com/Alan-Jowett/sonde.git?rev=ac61447d3294f49711038edfb1fa3520c45fed6b#ac61447d3294f49711038edfb1fa3520c45fed6b"
 
 [[package]]
 name = "ssmarshal"

@@ -458,3 +458,46 @@ NOT** mutate map backing.
 
 Map writes **MUST** hold synchronization only for the bounded copy of up to 14
 replacement bytes and response snapshot.
+
+### REQ-OPT-VAL-021: End-to-end map-helper smoke test
+
+The repository **MUST** provide a repeatable host-side smoke test that uses the
+USB CDC/I2C bridge and target address `0x42` to exercise BPF image loading,
+array-map reads and writes, one synchronous BPF invocation, and post-execution
+map readback on hardware.
+
+The test **MUST** fail explicitly on transport errors, malformed or busy
+responses, unexpected statuses, short responses, sequence mismatches, or
+value mismatches.
+
+### REQ-OPT-VAL-022: Smoke-test BPF image
+
+The smoke-test image **MUST** contain one four-byte-key,
+four-byte-value `BPF_MAP_TYPE_ARRAY` map and a deterministic entry at index
+zero. Its BPF program **MUST** call `bpf_map_lookup_elem`, verify that the
+entry contains the expected value `41`, increment the value to `42`, and
+persist the incremented value with `bpf_map_update_elem`.
+
+The program **MUST** return zero only after lookup, comparison, increment, and
+update succeed. Lookup failure, an unexpected value, or update failure **MUST**
+produce a nonzero return value.
+
+### REQ-OPT-VAL-023: Smoke-test transaction sequence
+
+The smoke test **MUST** reset the target, wait the documented reset interval,
+load and commit the smoke-test image, and wait for deferred load operations to
+complete. It **MUST** then perform these operations in order:
+
+1. Read map entry zero and verify four zero bytes.
+2. Write the little-endian value `41` to map entry zero.
+3. Issue exactly one valid `CMD_START_BPF` request and verify `STATUS_OK`.
+4. Read map entry zero and verify the little-endian value `42`.
+
+The test **MUST NOT** rely on a pre-existing image or map contents.
+
+### REQ-OPT-VAL-024: Smoke-test scope
+
+The smoke test **MUST NOT** introduce recursive or event-triggered execution,
+new helper IDs, new map types, map deletion semantics, or production
+protocol behavior outside the already specified load, map, and Start command
+surfaces.

@@ -186,6 +186,25 @@ descriptors, and a recomputed CRC before treating an image as committed. The
 CRC query reports only this validated committed CRC. A partially programmed
 page is therefore never executable or queryable as a program.
 
+## End-to-end smoke test
+
+The host-side smoke test runs through the USB CDC/I2C bridge at target address
+`0x42`. It resets the target, waits at least one second, loads and commits a
+single-map image, and waits for each deferred load operation to finish before
+continuing.
+
+The image contains one array map with a four-byte key, four-byte value, and one
+entry. The BPF program uses key zero, looks up the entry through helper ID 10,
+requires the little-endian value `41`, increments it to `42`, and updates the
+entry through helper ID 11. The host sequence reads zeroed backing, writes
+little-endian `41`, starts the image exactly once, and reads back little-endian
+`42`.
+
+The smoke test treats any transport failure, unexpected status, sequence
+mismatch, short response, failed BPF execution, or map value mismatch as a
+failure. It does not add runtime behavior or exercise recursive or
+event-triggered execution.
+
 ## Status storage
 
 Status storage is one fixed 16-byte message buffer plus its length. Startup
@@ -231,3 +250,4 @@ bytes of execution stack.
 | Resource model | REQ-OPT-FW-008 |
 | BPF image, execution, and flash state machine | REQ-OPT-BPF-001 to REQ-OPT-BPF-017 |
 | Map state and helpers | REQ-OPT-BPF-011 to REQ-OPT-BPF-017, REQ-OPT-MAP-READ-001 to REQ-OPT-MAP-READ-003, REQ-OPT-MAP-WRITE-001 to REQ-OPT-MAP-WRITE-003 |
+| End-to-end smoke test | REQ-OPT-VAL-021 to REQ-OPT-VAL-024 |
