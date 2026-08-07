@@ -123,7 +123,7 @@ sections exceed 32 KiB.
 
 OptiBridge consumes the upstream
 [`sonde-bpf`](https://github.com/Alan-Jowett/sonde/tree/main/crates/sonde-bpf)
-crate at pinned revision `cacc8edfbd59c09d9425aa6b93939c7bf85ff8d5`, with
+crate at pinned revision `29ee7c06070d8a677b7cd50f3de6d501f635e128`, with
 default features disabled. The firmware runs a bounded two-instruction,
 allocation-free startup probe so release linking retains the interpreter for
 size measurement.
@@ -131,11 +131,15 @@ size measurement.
 | Image configuration | Flash |
 | --- | ---: |
 | I2C slave baseline | 8,078 bytes |
-| Current release image with retained `sonde-bpf` interpreter and map writes | 23,562 bytes |
-| Remaining below the BPF partition at `0x6000` | 1,014 bytes |
+| Full `sonde-bpf` interpreter with map writes | 23,562 bytes |
+| Release image with only `base32` and `divmul32` conformance groups | 15,166 bytes |
+| Reduction from the full interpreter | 8,396 bytes (35.6%) |
+| Remaining below the BPF partition at `0x6000` | 9,410 bytes |
 
-This probe does not implement BPF loading, helpers, maps, or optical runtime
-execution.
+The firmware selects only the RFC 9669 32-bit ALU (`base32`) and 32-bit
+multiply/divide/modulo (`divmul32`) conformance groups. The startup size probe
+does not exercise BPF loading, helpers, maps, or optical runtime execution;
+those capabilities are provided by the firmware and protocol runtime.
 
 ## Project Status
 
