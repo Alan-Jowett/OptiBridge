@@ -24,6 +24,7 @@
 | VAL-OPT-018 | REQ-OPT-MAP-WRITE-001 to REQ-OPT-MAP-WRITE-003 | `python tools/test_bpf_loader.py --port <COM>` through the CDC-I2C bridge | A 64-byte map is updated with successive inferred-length packed-location raw writes. Reads return the concatenated updates; reset restores zero backing for the committed image. |
 | VAL-OPT-019 | REQ-OPT-BPF-011, REQ-OPT-BPF-012, REQ-OPT-BPF-016 | `cargo test -p optibridge-protocol` | Validated array descriptors create runtime map metadata only after image commit; malformed, incomplete, or failed images expose no committed maps, and reset restores zeroed volatile backing. |
 | VAL-OPT-020 | REQ-OPT-BPF-013 to REQ-OPT-BPF-015, REQ-OPT-BPF-017 | `cargo test -p optibridge-protocol` plus a firmware release build | A BPF program can use Sonde helper IDs 10 and 11 to look up and update valid array entries. Wrong pointers, sizes, map references, and indices fail deterministically without mutating unrelated state. |
+| VAL-OPT-021 | REQ-OPT-VAL-021 to REQ-OPT-VAL-024 | `python tools/test_bpf_map_helpers.py --port <COM>` through the CDC-I2C bridge | The smoke test resets the target, loads the helper-calling image, observes an initially zero map entry, writes 41, starts the image once, and observes 42. Transport, status, sequence, execution, and value failures fail the test. |
 
 ## Required hardware validation
 
@@ -171,3 +172,7 @@ Reset outcome.
 | REQ-OPT-MAP-WRITE-001 | VAL-OPT-016, VAL-OPT-018 |
 | REQ-OPT-MAP-WRITE-002 | VAL-OPT-016, VAL-OPT-018 |
 | REQ-OPT-MAP-WRITE-003 | VAL-OPT-016, VAL-OPT-018 |
+| REQ-OPT-VAL-021 | VAL-OPT-021 |
+| REQ-OPT-VAL-022 | VAL-OPT-021 |
+| REQ-OPT-VAL-023 | VAL-OPT-021 |
+| REQ-OPT-VAL-024 | VAL-OPT-021 |
