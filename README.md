@@ -58,7 +58,10 @@ bridges BPF helper calls to the optical hardware.
 
 It also owns reset handling and the circular status buffer used for diagnostics.
 The initial loader supports a 960-instruction image, up to eight array-map
-descriptors, and 1,024 bytes of aggregate map backing storage. Its detailed
+descriptors, and 1,024 bytes of aggregate map backing storage. A valid Start
+BPF command invokes the committed image once with an empty context; return
+value zero succeeds, while nonzero returns or interpreter failures return
+`STATUS_BAD_COMMAND`. Its detailed
 wire format, flash layout, and CRC behavior are specified in
 `specs/optibridge/`.
 
@@ -100,8 +103,9 @@ Load BPF stages an image over multiple transactions into reserved flash and
 supports only BPF bytecode plus array-map definitions; it does not execute the
 program. Query BPF CRC reports the committed image identity. Read BPF map
 returns a paged raw byte range from a loaded array map. Write BPF map updates
-a paged raw byte range using a packed map ID and offset. Start BPF and optical
-behavior remain `STATUS_NOT_IMPLEMENTED`.
+a paged raw byte range using a packed map ID and offset. After successful
+Start, loading and repeated Start are rejected until reset. Recursive and
+event-triggered execution, helpers, and optical behavior remain out of scope.
 
 After Reset, a master must wait at least one second before sending another I2C
 request.

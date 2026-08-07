@@ -22,8 +22,9 @@ use critical_section::Mutex;
 use embassy_executor::Spawner;
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use optibridge_protocol::{
-    BPF_MAX_MAP_BYTES, BpfFlash, BpfLoader, MAX_FRAME, PacketOutcome, StatusQueue,
-    dispatch_with_bpf, parse_packet,
+    BPF_FLASH_OFFSET, BPF_HEADER_SIZE, BPF_MAX_MAPS, BPF_MAX_MAP_BYTES, BpfFlash, BpfLoader,
+    BpfProgramMetadata, MAX_FRAME, PacketOutcome, StatusQueue, STATUS_BAD_COMMAND,
+    dispatch_with_bpf_and_executor, parse_packet,
 };
 
 const GPIOB_CFGLR: *mut u32 = 0x4001_0c00 as *mut u32;
@@ -36,6 +37,7 @@ const I2C_BUS_IDLE_SPINS: u32 = 48_000;
 const PB6_MODE_SHIFT: u32 = 24;
 const PB7_MODE_SHIFT: u32 = 28;
 const GPIO_ALT_OPEN_DRAIN_50MHZ: u32 = 0xF;
+const BPF_EXECUTION_FLASH_BASE: usize = 0;
 const BPF_SIZE_PROBE: [u8; 16] = [
     0xb7, 0x00, 0x00, 0x00, 0x2a, 0x00, 0x00, 0x00, // mov64 r0, 42
     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
@@ -121,6 +123,57 @@ fn run_bpf_size_probe() {
     }
 }
 
+fn execute_loaded_bpf(
+    metadata: &BpfProgramMetadata,
+    map_backing: &mut [u8; BPF_MAX_MAP_BYTES],
+) -> Result<u64, u8> {
+    let mut maps = [sonde_bpf::interpreter::MapRegion {
+        relocated_ptr: 0,
+        key_size: 0,
+        value_size: 0,
+        data_start: 0,
+        data_end: 0,
+    }; BPF_MAX_MAPS];
+    for (index, map) in maps[..metadata.map_count as usize].iter_mut().enumerate() {
+        let descriptor = metadata.maps[index];
+        let backing = unsafe {
+            map_backing
+                .as_mut_ptr()
+                .add(descriptor.backing_offset as usize)
+        };
+        let start = backing as u64;
+        let end = start + descriptor.backing_len as u64;
+        *map = sonde_bpf::interpreter::MapRegion {
+            relocated_ptr: start,
+            key_size: descriptor.key_size,
+            value_size: descriptor.value_size,
+            data_start: start,
+            data_end: end,
+        };
+    }
+
+    let program = unsafe {
+        core::slice::from_raw_parts(
+            (BPF_EXECUTION_FLASH_BASE + BPF_FLASH_OFFSET as usize + BPF_HEADER_SIZE)
+                as *const u8,
+            metadata.bytecode_len as usize,
+        )
+    };
+    let mut context = [];
+    unsafe {
+        sonde_bpf::interpreter::execute_program(
+            program,
+            &mut context,
+            &[],
+            &maps[..metadata.map_count as usize],
+            false,
+            sonde_bpf::interpreter::UNLIMITED_BUDGET,
+            &[],
+        )
+    }
+    .map_err(|_| STATUS_BAD_COMMAND)
+}
+
 #[panic_handler]
 fn panic(_info: &PanicInfo<'_>) -> ! {
     loop {
@@ -139,7 +192,14 @@ fn on_i2c_packet(packet: &[u8], truncated: bool) {
                 loader,
                 response,
             } = &mut *state;
-            match dispatch_with_bpf(&request, status_queue, loader, &mut map_backing, response) {
+            match dispatch_with_bpf_and_executor(
+                &request,
+                status_queue,
+                loader,
+                &mut map_backing,
+                response,
+                execute_loaded_bpf,
+            ) {
                 PacketOutcome::Response(length) => {
                     snapshot[..length].copy_from_slice(&state.response[..length]);
                     PacketOutcome::Response(length)

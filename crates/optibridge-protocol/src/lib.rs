@@ -62,6 +62,7 @@ enum LoaderState {
     Empty,
     Receiving,
     Committed(u32),
+    Running(u32),
     Failed(u8),
 }
 
@@ -69,10 +70,32 @@ enum LoaderState {
 struct MapLayout {
     offset: u16,
     len: u16,
+    key_size: u32,
+    value_size: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BpfMapMetadata {
+    pub backing_offset: u16,
+    pub backing_len: u16,
+    pub key_size: u32,
+    pub value_size: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BpfProgramMetadata {
+    pub bytecode_len: u16,
+    pub map_count: u8,
+    pub maps: [BpfMapMetadata; BPF_MAX_MAPS],
 }
 
 impl MapLayout {
-    const EMPTY: Self = Self { offset: 0, len: 0 };
+    const EMPTY: Self = Self {
+        offset: 0,
+        len: 0,
+        key_size: 0,
+        value_size: 0,
+    };
 }
 
 /// Fixed-capacity BPF image loader state. Flash operations are performed only
@@ -109,6 +132,9 @@ impl BpfLoader {
     pub fn accepts_load(&mut self, request: &Request) -> Result<(), u8> {
         if self.pending.is_some() {
             return Err(STATUS_BUSY);
+        }
+        if matches!(self.state, LoaderState::Running(_)) {
+            return Err(STATUS_BAD_STATE);
         }
         let payload = &request.payload[..request.payload_len as usize];
         let operation = match payload.first().copied() {
@@ -175,9 +201,52 @@ impl BpfLoader {
             return Err(STATUS_BUSY);
         }
         match self.state {
-            LoaderState::Committed(crc) => Ok(crc),
+            LoaderState::Committed(crc) | LoaderState::Running(crc) => Ok(crc),
             LoaderState::Failed(status) => Err(status),
             LoaderState::Empty | LoaderState::Receiving => Err(STATUS_NO_PROGRAM),
+        }
+    }
+
+    pub fn execution_metadata(&self) -> Result<BpfProgramMetadata, u8> {
+        match self.state {
+            LoaderState::Committed(_) => {}
+            LoaderState::Running(_) => return Err(STATUS_BAD_STATE),
+            LoaderState::Empty | LoaderState::Receiving => return Err(STATUS_NO_PROGRAM),
+            LoaderState::Failed(status) => return Err(status),
+        }
+        let mut maps = [BpfMapMetadata {
+            backing_offset: 0,
+            backing_len: 0,
+            key_size: 0,
+            value_size: 0,
+        }; BPF_MAX_MAPS];
+        let mut index = 0;
+        while index < self.committed_map_count as usize {
+            let layout = self.map_layouts[index];
+            maps[index] = BpfMapMetadata {
+                backing_offset: layout.offset,
+                backing_len: layout.len,
+                key_size: layout.key_size,
+                value_size: layout.value_size,
+            };
+            index += 1;
+        }
+        Ok(BpfProgramMetadata {
+            bytecode_len: self.bytecode_len,
+            map_count: self.committed_map_count,
+            maps,
+        })
+    }
+
+    pub fn mark_running(&mut self) -> Result<(), u8> {
+        match self.state {
+            LoaderState::Committed(crc) => {
+                self.state = LoaderState::Running(crc);
+                Ok(())
+            }
+            LoaderState::Running(_) => Err(STATUS_BAD_STATE),
+            LoaderState::Empty | LoaderState::Receiving => Err(STATUS_NO_PROGRAM),
+            LoaderState::Failed(status) => Err(status),
         }
     }
 
@@ -195,7 +264,10 @@ impl BpfLoader {
         if byte_length == 0 || byte_length as usize > MAX_PAYLOAD {
             return Err(STATUS_BAD_LENGTH);
         }
-        if !matches!(self.state, LoaderState::Committed(_)) {
+        if !matches!(
+            self.state,
+            LoaderState::Committed(_) | LoaderState::Running(_)
+        ) {
             return Err(STATUS_NO_PROGRAM);
         }
         let Some(layout) = self.map_layouts.get(map_id as usize) else {
@@ -225,7 +297,10 @@ impl BpfLoader {
         if replacement.is_empty() || replacement.len() > MAX_MAP_WRITE_BYTES {
             return Err(STATUS_BAD_LENGTH);
         }
-        if !matches!(self.state, LoaderState::Committed(_)) {
+        if !matches!(
+            self.state,
+            LoaderState::Committed(_) | LoaderState::Running(_)
+        ) {
             return Err(STATUS_NO_PROGRAM);
         }
         let Some(layout) = self.map_layouts.get(map_id as usize) else {
@@ -334,6 +409,8 @@ impl BpfLoader {
             return;
         }
         self.state = LoaderState::Committed(expected_crc);
+        self.bytecode_len = bytecode_len;
+        self.map_count = map_count;
         self.map_layouts = map_layouts;
         self.committed_map_count = committed_map_count;
     }
@@ -484,6 +561,8 @@ fn map_layouts<F: BpfFlash>(
         layouts[index] = MapLayout {
             offset: total as u16,
             len: bytes as u16,
+            key_size,
+            value_size,
         };
         total = next_total;
     }
@@ -689,6 +768,27 @@ pub fn dispatch_with_bpf(
     map_backing: &mut [u8; BPF_MAX_MAP_BYTES],
     output: &mut [u8; MAX_FRAME],
 ) -> PacketOutcome {
+    dispatch_with_bpf_and_executor(
+        request,
+        status_queue,
+        loader,
+        map_backing,
+        output,
+        |_metadata, _map_backing| Err(STATUS_BAD_COMMAND),
+    )
+}
+
+pub fn dispatch_with_bpf_and_executor<F>(
+    request: &Request,
+    status_queue: &mut StatusQueue,
+    loader: &mut BpfLoader,
+    map_backing: &mut [u8; BPF_MAX_MAP_BYTES],
+    output: &mut [u8; MAX_FRAME],
+    mut execute: F,
+) -> PacketOutcome
+where
+    F: FnMut(&BpfProgramMetadata, &mut [u8; BPF_MAX_MAP_BYTES]) -> Result<u64, u8>,
+{
     if request.flags != 0 {
         return response(STATUS_BAD_FLAGS, request.sequence, &[], output);
     }
@@ -729,6 +829,21 @@ pub fn dispatch_with_bpf(
                 Ok(()) => response(STATUS_OK, request.sequence, &[], output),
                 Err(status) => response(status, request.sequence, &[], output),
             }
+        }
+        CMD_START_BPF if request.payload_len != 0 => {
+            response(STATUS_BAD_LENGTH, request.sequence, &[], output)
+        }
+        CMD_START_BPF => {
+            let metadata = match loader.execution_metadata() {
+                Ok(metadata) => metadata,
+                Err(status) => return response(status, request.sequence, &[], output),
+            };
+            let status = match execute(&metadata, map_backing) {
+                Ok(0) => loader.mark_running().map(|()| STATUS_OK).unwrap_or(STATUS_BAD_STATE),
+                Ok(_) | Err(STATUS_BAD_COMMAND) => STATUS_BAD_COMMAND,
+                Err(status) => status,
+            };
+            response(status, request.sequence, &[], output)
         }
         CMD_QUERY_BPF_CRC if request.payload_len != 0 => {
             response(STATUS_BAD_LENGTH, request.sequence, &[], output)
@@ -1350,6 +1465,163 @@ mod tests {
         let mut rebooted = BpfLoader::new();
         rebooted.validate_committed(&mut flash);
         assert_eq!(rebooted.query(), Ok(crc));
+    }
+
+    #[test]
+    fn start_bpf_executes_once_and_enters_running_state() {
+        let mut loader = BpfLoader::new();
+        let mut flash = FakeFlash::new();
+        let bytecode = [0u8; 8];
+        let crc = crc32_iso_hdlc(&bytecode);
+        assert_eq!(
+            loader.accepts_load(&load_request(&[
+                0,
+                8,
+                0,
+                0,
+                (crc & 0xff) as u8,
+                (crc >> 8) as u8,
+                (crc >> 16) as u8,
+                (crc >> 24) as u8,
+            ])),
+            Ok(())
+        );
+        execute(&mut loader, &mut flash);
+        let mut data = [0; 11];
+        data[0] = 1;
+        data[3..11].copy_from_slice(&bytecode);
+        assert_eq!(loader.accepts_load(&load_request(&data)), Ok(()));
+        execute(&mut loader, &mut flash);
+        assert_eq!(loader.accepts_load(&load_request(&[2])), Ok(()));
+        execute(&mut loader, &mut flash);
+
+        let mut request = Request::empty();
+        request.command = CMD_START_BPF;
+        request.sequence = 12;
+        let mut status_queue = StatusQueue::ready();
+        let mut backing = [0; BPF_MAX_MAP_BYTES];
+        let mut output = [0; MAX_FRAME];
+        let mut invocations = 0;
+        let length = response_length(dispatch_with_bpf_and_executor(
+            &request,
+            &mut status_queue,
+            &mut loader,
+            &mut backing,
+            &mut output,
+            |_metadata, _backing| {
+                invocations += 1;
+                Ok(0)
+            },
+        ));
+        assert_eq!(invocations, 1);
+        assert_eq!(&output[..length], &[MAGIC, STATUS_OK, 0, 12, 0]);
+        assert_eq!(loader.query(), Ok(crc));
+        assert_eq!(
+            loader.accepts_load(&load_request(&[0, 8, 0, 0, 0, 0, 0, 0])),
+            Err(STATUS_BAD_STATE)
+        );
+
+        let length = response_length(dispatch_with_bpf_and_executor(
+            &request,
+            &mut status_queue,
+            &mut loader,
+            &mut backing,
+            &mut output,
+            |_metadata, _backing| panic!("running Start must not invoke the executor"),
+        ));
+        assert_eq!(&output[..length], &[MAGIC, STATUS_BAD_STATE, 0, 12, 0]);
+    }
+
+    #[test]
+    fn start_bpf_rejects_invalid_requests_and_execution_failures() {
+        let mut loader = BpfLoader::new();
+        let mut backing = [0; BPF_MAX_MAP_BYTES];
+        let mut output = [0; MAX_FRAME];
+        let mut status_queue = StatusQueue::ready();
+        let mut request = Request::empty();
+        request.command = CMD_START_BPF;
+        request.sequence = 13;
+
+        let length = response_length(dispatch_with_bpf_and_executor(
+            &request,
+            &mut status_queue,
+            &mut loader,
+            &mut backing,
+            &mut output,
+            |_metadata, _backing| panic!("no-image Start must not invoke the executor"),
+        ));
+        assert_eq!(&output[..length], &[MAGIC, STATUS_NO_PROGRAM, 0, 13, 0]);
+
+        request.flags = 1;
+        let length = response_length(dispatch_with_bpf_and_executor(
+            &request,
+            &mut status_queue,
+            &mut loader,
+            &mut backing,
+            &mut output,
+            |_metadata, _backing| panic!("bad-flags Start must not invoke the executor"),
+        ));
+        assert_eq!(&output[..length], &[MAGIC, STATUS_BAD_FLAGS, 0, 13, 0]);
+
+        request.flags = 0;
+        request.payload_len = 1;
+        let length = response_length(dispatch_with_bpf_and_executor(
+            &request,
+            &mut status_queue,
+            &mut loader,
+            &mut backing,
+            &mut output,
+            |_metadata, _backing| panic!("bad-length Start must not invoke the executor"),
+        ));
+        assert_eq!(&output[..length], &[MAGIC, STATUS_BAD_LENGTH, 0, 13, 0]);
+
+        let mut flash = FakeFlash::new();
+        let bytecode = [0u8; 8];
+        let crc = crc32_iso_hdlc(&bytecode);
+        assert_eq!(
+            loader.accepts_load(&load_request(&[
+                0,
+                8,
+                0,
+                0,
+                (crc & 0xff) as u8,
+                (crc >> 8) as u8,
+                (crc >> 16) as u8,
+                (crc >> 24) as u8,
+            ])),
+            Ok(())
+        );
+        execute(&mut loader, &mut flash);
+        let mut data = [0; 11];
+        data[0] = 1;
+        data[3..11].copy_from_slice(&bytecode);
+        assert_eq!(loader.accepts_load(&load_request(&data)), Ok(()));
+        execute(&mut loader, &mut flash);
+        assert_eq!(loader.accepts_load(&load_request(&[2])), Ok(()));
+        execute(&mut loader, &mut flash);
+
+        request.payload_len = 0;
+        request.sequence = 14;
+        let length = response_length(dispatch_with_bpf_and_executor(
+            &request,
+            &mut status_queue,
+            &mut loader,
+            &mut backing,
+            &mut output,
+            |_metadata, _backing| Ok(1),
+        ));
+        assert_eq!(&output[..length], &[MAGIC, STATUS_BAD_COMMAND, 0, 14, 0]);
+
+        request.sequence = 15;
+        let length = response_length(dispatch_with_bpf_and_executor(
+            &request,
+            &mut status_queue,
+            &mut loader,
+            &mut backing,
+            &mut output,
+            |_metadata, _backing| Err(STATUS_BAD_COMMAND),
+        ));
+        assert_eq!(&output[..length], &[MAGIC, STATUS_BAD_COMMAND, 0, 15, 0]);
     }
 
     #[test]

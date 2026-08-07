@@ -4,11 +4,11 @@
 
 | ID | Requirement coverage | Method | Expected result |
 | --- | --- | --- | --- |
-| VAL-OPT-001 | REQ-OPT-FW-003, REQ-OPT-FW-004, REQ-OPT-FW-011, REQ-OPT-ACT-001, REQ-OPT-ACT-004 to REQ-OPT-ACT-006, REQ-OPT-ACT-008, REQ-OPT-ACT-009 | `cargo test -p optibridge-protocol` | Valid Reset returns the terminal Reset outcome; invalid Reset returns its error response without consuming status. The two remaining stubs and all packet-dispatch behavior retain their documented results. |
+| VAL-OPT-001 | REQ-OPT-FW-003, REQ-OPT-FW-004, REQ-OPT-FW-011, REQ-OPT-ACT-001, REQ-OPT-ACT-004 to REQ-OPT-ACT-009, REQ-OPT-BPF-010 | `cargo test -p optibridge-protocol` | Valid Reset returns the terminal Reset outcome; invalid Reset returns its error response without consuming status. Start validates its request shape, invokes an image once on success, maps execution results, enters running, and preserves packet-dispatch behavior. |
 | VAL-OPT-002 | REQ-OPT-ACT-002, REQ-OPT-ACT-003 | `cargo test -p optibridge-protocol` | Read Status returns `ready` with the request sequence, then consumes it; the next read returns `STATUS_OK` with an empty payload. |
 | VAL-OPT-003 | REQ-OPT-FW-001, REQ-OPT-FW-002, REQ-OPT-FW-006, REQ-OPT-FW-007, REQ-OPT-FW-014 | `cargo xtask generate-hal` followed by `cargo build --release -p optibridge-firmware --target riscv32imc-unknown-none-elf --features firmware` | The pinned generated HAL exposes `interrupt::system_reset`; firmware compiles and links with it, status storage, and the Sonde probe. |
 | VAL-OPT-004 | REQ-OPT-FW-008, REQ-OPT-ACT-007 | `cargo xtask size` | OptiBridge release image is at or below 24,576 bytes; the bridge image remains at or below its full 32,768-byte device-flash capacity. |
-| VAL-OPT-005 | REQ-OPT-FW-009 to REQ-OPT-FW-011 | Hardware through the CDC-I2C bridge | One target reset is followed by two Read Status requests and all four stub request/read pairs; every response completes without another target reset. |
+| VAL-OPT-005 | REQ-OPT-FW-009 to REQ-OPT-FW-011 | Hardware through the CDC-I2C bridge | One target reset is followed by two Read Status requests, a valid Start, a repeated Start, and a Load attempt while running; every response completes without another target reset. |
 | VAL-OPT-006 | REQ-OPT-FW-003, REQ-OPT-FW-004, REQ-OPT-FW-006 | Hardware through the CDC-I2C bridge | An incomplete or bad-length request queues no protocol response; the immediately following valid request succeeds. |
 | VAL-OPT-007 | REQ-OPT-FW-013 | Hardware through the CDC-I2C bridge | Two valid writes without an intervening read leave only the later response in the generated slot. |
 | VAL-OPT-008 | REQ-OPT-FW-006, REQ-OPT-FW-012 | Hardware through the CDC-I2C bridge | An unread valid response followed by a bad-length request yields zero filler, then a valid request succeeds. |
@@ -18,7 +18,7 @@
 | VAL-OPT-012 | REQ-OPT-BPF-001 to REQ-OPT-BPF-006, REQ-OPT-BPF-008 | `cargo test -p optibridge-protocol` | Valid images commit only after complete ordered transfer and matching CRC. Bad alignment, offsets, map definitions, over-limit images, simulated failed writes, and partial images never become committed. |
 | VAL-OPT-013 | REQ-OPT-FW-008, REQ-OPT-BPF-001, REQ-OPT-BPF-004 | Release linker build plus section inspection | Firmware links below `0x6000`; the BPF slot is exactly `0x6000..=0x7fff`; static RAM plus the linker-reserved stack fits 10 KiB and leaves at least 4 KiB stack. |
 | VAL-OPT-014 | REQ-OPT-BPF-004, REQ-OPT-BPF-005 | Hardware through the CDC-I2C bridge | Each target page is erased no more than once per attempt, data is programmed in ascending halfwords, a busy request has no effect, and the target remains available after every deferred operation. |
-| VAL-OPT-015 | REQ-OPT-BPF-006, REQ-OPT-BPF-007 | Hardware through the CDC-I2C bridge | A completed image returns its CRC before and after reset. A pending, failed, and blank image report their respective statuses. A later successful Start BPF implementation locks loading until reset. |
+| VAL-OPT-015 | REQ-OPT-BPF-006, REQ-OPT-BPF-007, REQ-OPT-ACT-005, REQ-OPT-BPF-010 | Hardware through the CDC-I2C bridge | A completed image returns its CRC before and after reset. A pending, failed, and blank image report their respective statuses. A successful Start invokes the image once, returns its execution status, and locks loading until reset. |
 | VAL-OPT-016 | REQ-OPT-MAP-READ-001 to REQ-OPT-MAP-READ-003, REQ-OPT-MAP-WRITE-001 to REQ-OPT-MAP-WRITE-003 | `cargo test -p optibridge-protocol` | Valid packed-location raw writes preserve sequence, update exactly their one-through-14-byte ranges, and can be read back exactly. Flags, shape, reserved bits, map ID, absent-image, and range errors return their documented statuses without mutation. |
 | VAL-OPT-017 | REQ-OPT-MAP-READ-001 to REQ-OPT-MAP-READ-003 | Hardware through the CDC-I2C bridge | A map longer than 16 bytes is recovered with successive raw byte-range reads; reset restores zero backing for the committed image. |
 | VAL-OPT-018 | REQ-OPT-MAP-WRITE-001 to REQ-OPT-MAP-WRITE-003 | `python tools/test_bpf_loader.py --port <COM>` through the CDC-I2C bridge | A 64-byte map is updated with successive inferred-length packed-location raw writes. Reads return the concatenated updates; reset restores zero backing for the committed image. |
@@ -141,7 +141,7 @@ Reset outcome.
 | REQ-OPT-ACT-002 | VAL-OPT-002 |
 | REQ-OPT-ACT-003 | VAL-OPT-002, Read Status hardware validation |
 | REQ-OPT-ACT-004 | VAL-OPT-001, request-error hardware validation |
-| REQ-OPT-ACT-005 | VAL-OPT-001, recognized-stub hardware validation |
+| REQ-OPT-ACT-005 | VAL-OPT-001, VAL-OPT-015 |
 | REQ-OPT-ACT-006 | VAL-OPT-001, request-error hardware validation |
 | REQ-OPT-ACT-007 | VAL-OPT-004 |
 | REQ-OPT-ACT-008 | VAL-OPT-001, VAL-OPT-009 |
@@ -155,6 +155,7 @@ Reset outcome.
 | REQ-OPT-BPF-007 | VAL-OPT-011, VAL-OPT-015 |
 | REQ-OPT-BPF-008 | VAL-OPT-012 |
 | REQ-OPT-BPF-009 | VAL-OPT-011 |
+| REQ-OPT-BPF-010 | VAL-OPT-001, VAL-OPT-015 |
 | REQ-OPT-MAP-READ-001 | VAL-OPT-016, VAL-OPT-017 |
 | REQ-OPT-MAP-READ-002 | VAL-OPT-016, VAL-OPT-017 |
 | REQ-OPT-MAP-READ-003 | VAL-OPT-016, VAL-OPT-017 |
