@@ -76,7 +76,7 @@ It validates flags before command-specific payload length. The action table is:
 | --- | --- | --- | --- |
 | Reset (`0x01`) | Empty | No response | Immediate generated-HAL system reset |
 | Load BPF (`0x02`) | Begin, Data, or Finalize | `STATUS_OK` on acceptance | Deferred flash-image operation |
-| Start BPF (`0x03`) | Empty | `STATUS_NOT_IMPLEMENTED` | None |
+| Start BPF (`0x03`) | Empty, zero flags, committed image | Status-only `STATUS_OK`, `STATUS_NO_PROGRAM`, or `STATUS_BAD_COMMAND` | Invoke image exactly once |
 | Read BPF map (`0x04`) | Map ID + byte range | `STATUS_OK` + raw bytes | Bounded map snapshot |
 | Write BPF map (`0x05`) | Map ID + byte range + raw bytes | Status-only `STATUS_OK` | Bounded map update |
 | Read Status (`0x06`) | Empty | `STATUS_OK` + newest message | Pop newest message |
@@ -88,6 +88,15 @@ through `0x09`. Unknown commands retain `STATUS_BAD_COMMAND`. A valid Reset is
 fire-and-forget and does not queue a response. The master waits at least one
 second before its next I2C request. Reset validation errors and all other
 action errors are status-only responses.
+
+Start BPF executes in the bounded I2C request callback before its status-only
+response is queued. It supplies an empty context and no helpers to the
+interpreter, passes the validated map backing ranges, and invokes the image
+once. Return value zero enters the running state and returns `STATUS_OK`;
+nonzero returns or interpreter errors return `STATUS_BAD_COMMAND` without
+entering that state. A running image rejects Start and Load BPF with
+`STATUS_BAD_STATE`, while CRC and map operations retain their read-only or
+bounded semantics.
 
 ## BPF image and flash state machine
 
@@ -118,7 +127,7 @@ no-image
 committed -> Begin accepted -> erase/program pending
 receiving or failed -> Reset -> no-image
 committed -> Reset -> committed-on-flash after boot validation
-committed -> future successful Start BPF -> running -> Reset -> committed
+committed -> successful Start BPF -> running -> Reset -> committed
 ```
 
 The callback only validates a frame, copies one Load BPF operation into a fixed
@@ -205,8 +214,8 @@ bytes of execution stack.
 | --- | --- |
 | Platform and startup | REQ-OPT-FW-001, REQ-OPT-FW-002, REQ-OPT-FW-007 |
 | I2C ISR state machine | REQ-OPT-FW-003, REQ-OPT-FW-004, REQ-OPT-FW-006, REQ-OPT-FW-009 to REQ-OPT-FW-013 |
-| Action dispatch | REQ-OPT-FW-005, REQ-OPT-FW-014, REQ-OPT-ACT-001, REQ-OPT-ACT-003 to REQ-OPT-ACT-009, REQ-OPT-MAP-WRITE-001 to REQ-OPT-MAP-WRITE-003 |
+| Action dispatch | REQ-OPT-FW-005, REQ-OPT-FW-014, REQ-OPT-ACT-001, REQ-OPT-ACT-003 to REQ-OPT-ACT-009, REQ-OPT-BPF-010, REQ-OPT-MAP-WRITE-001 to REQ-OPT-MAP-WRITE-003 |
 | Status storage | REQ-OPT-ACT-002, REQ-OPT-ACT-003, REQ-OPT-ACT-007 |
 | Resource model | REQ-OPT-FW-008 |
-| BPF image and flash state machine | REQ-OPT-BPF-001 to REQ-OPT-BPF-009 |
+| BPF image, execution, and flash state machine | REQ-OPT-BPF-001 to REQ-OPT-BPF-010 |
 | Map state | REQ-OPT-MAP-READ-001 to REQ-OPT-MAP-READ-003, REQ-OPT-MAP-WRITE-001 to REQ-OPT-MAP-WRITE-003 |

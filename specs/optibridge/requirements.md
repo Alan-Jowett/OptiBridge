@@ -160,19 +160,35 @@ return `STATUS_OK` with an empty payload.
 
 The initial response payload **MUST** be ASCII `ready`.
 
-### REQ-OPT-ACT-004: Stub request validation
+### REQ-OPT-ACT-004: Start BPF request validation
 
 `CMD_START_BPF` **MUST** require zero flags and zero payload. Nonzero flags
 **MUST** return `STATUS_BAD_FLAGS`; a nonempty payload **MUST** return
-`STATUS_BAD_LENGTH`.
+`STATUS_BAD_LENGTH`. Invalid requests **MUST NOT** execute BPF or mutate
+runtime state.
 
-### REQ-OPT-ACT-005: Remaining stub behavior
+### REQ-OPT-ACT-005: Start BPF execution
 
-`CMD_START_BPF` **MUST NOT** mutate runtime state, load or execute BPF, access
-maps, or access optical hardware.
-
-It **MUST** return status-only `STATUS_NOT_IMPLEMENTED` (`0x04`) and retain the
+When a validated committed image exists, a valid `CMD_START_BPF` request **MUST**
+invoke that image exactly once with an empty context and no helpers. The
+interpreter return value `0` **MUST** produce a status-only `STATUS_OK`
+response; a nonzero return or interpreter failure **MUST** produce a
+status-only `STATUS_BAD_COMMAND` response. Responses **MUST** retain the
 request sequence.
+
+When no validated committed image exists, Start **MUST** return
+`STATUS_NO_PROGRAM` without invoking the interpreter.
+
+### REQ-OPT-BPF-010: Start BPF runtime state
+
+After a successful Start, the image **MUST** enter the running state. A
+subsequent Start or Load BPF request **MUST** return `STATUS_BAD_STATE` until
+reset. Query BPF CRC **MUST** remain read-only and return the committed CRC;
+map reads and writes **MAY** continue to use the committed map layout.
+
+Start **MUST NOT** mutate flash contents, map descriptor layout, or status
+storage. Reset **MUST** clear volatile running state while preserving the
+committed image and CRC.
 
 ### REQ-OPT-ACT-006: Unknown commands
 
@@ -181,8 +197,10 @@ Commands outside the seven defined action values **MUST** return status-only
 
 ### REQ-OPT-ACT-007: Deferred action semantics
 
-BPF execution, optical behavior, additional status enqueue sources, and a
-general circular-status-buffer API **MUST NOT** be introduced by this change.
+Recursive execution and GPIO, DMA, timer, interrupt, or other event-triggered
+BPF invocation **MUST NOT** be introduced by this change. Optical behavior,
+additional status enqueue sources, and a general circular-status-buffer API
+remain out of scope.
 
 ### REQ-OPT-ACT-008: Immediate Reset
 
@@ -280,9 +298,8 @@ image. A failed or incomplete attempt **MUST NOT** be marked committed or
 executed. Reset **MUST** preserve a committed flash image and its CRC while
 clearing volatile loader and running state.
 
-When Start BPF is later implemented and successfully transitions an image to
-running, Load BPF **MUST** return `STATUS_BAD_STATE` until reset. The current
-Start BPF stub **MUST NOT** transition this state.
+After successful Start BPF transitions an image to running, Load BPF **MUST**
+return `STATUS_BAD_STATE` until reset.
 
 ### REQ-OPT-BPF-007: Image CRC query
 
