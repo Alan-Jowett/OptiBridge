@@ -21,11 +21,13 @@ use ch32v203g6u6_embassy_hal::{
 use critical_section::Mutex;
 use embassy_executor::Spawner;
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
+use optibridge_firmware::map_helpers::{HELPER_ERROR, value_range};
 use optibridge_protocol::{
-    BPF_FLASH_OFFSET, BPF_HEADER_SIZE, BPF_MAX_MAPS, BPF_MAX_MAP_BYTES, BpfFlash, BpfLoader,
-    BpfProgramMetadata, MAX_FRAME, PacketOutcome, StatusQueue, STATUS_BAD_COMMAND,
+    BPF_FLASH_OFFSET, BPF_HEADER_SIZE, BPF_MAX_MAP_BYTES, BPF_MAX_MAPS, BpfFlash, BpfLoader,
+    BpfProgramMetadata, MAX_FRAME, PacketOutcome, STATUS_BAD_COMMAND, StatusQueue,
     dispatch_with_bpf_and_executor, parse_packet,
 };
+use sonde_bpf::interpreter::{HelperDescriptor, HelperReturn};
 
 const GPIOB_CFGLR: *mut u32 = 0x4001_0c00 as *mut u32;
 const GPIOB_BSHR: *mut u32 = 0x4001_0c10 as *mut u32;
@@ -67,6 +69,16 @@ static mut I2C_RX_BUFFER: [u8; MAX_FRAME] = [0; MAX_FRAME];
 static MAP_BACKING_STORE: Mutex<RefCell<[u8; BPF_MAX_MAP_BYTES]>> =
     Mutex::new(RefCell::new([0; BPF_MAX_MAP_BYTES]));
 static RESET_PENDING: AtomicBool = AtomicBool::new(false);
+static mut ACTIVE_MAP_HELPERS: Option<ActiveMapHelpers> = None;
+
+const MAP_LOOKUP_HELPER_ID: u32 = 10;
+const MAP_UPDATE_HELPER_ID: u32 = 11;
+
+#[derive(Clone, Copy)]
+struct ActiveMapHelpers {
+    backing: *mut u8,
+    metadata: BpfProgramMetadata,
+}
 
 struct FlashStorage<'a>(&'a mut FLASH);
 
@@ -154,24 +166,113 @@ fn execute_loaded_bpf(
 
     let program = unsafe {
         core::slice::from_raw_parts(
-            (BPF_EXECUTION_FLASH_BASE + BPF_FLASH_OFFSET as usize + BPF_HEADER_SIZE)
-                as *const u8,
+            (BPF_EXECUTION_FLASH_BASE + BPF_FLASH_OFFSET as usize + BPF_HEADER_SIZE) as *const u8,
             metadata.bytecode_len as usize,
         )
     };
     let mut context = [];
+    let helpers = [
+        HelperDescriptor {
+            id: MAP_LOOKUP_HELPER_ID,
+            func: bpf_map_lookup_elem,
+            ret: HelperReturn::MapValueOrNull { map_arg: 1 },
+        },
+        HelperDescriptor {
+            id: MAP_UPDATE_HELPER_ID,
+            func: bpf_map_update_elem,
+            ret: HelperReturn::Scalar,
+        },
+    ];
     unsafe {
+        ACTIVE_MAP_HELPERS = Some(ActiveMapHelpers {
+            backing: map_backing.as_mut_ptr(),
+            metadata: *metadata,
+        });
+    }
+    let result = unsafe {
         sonde_bpf::interpreter::execute_program(
             program,
             &mut context,
-            &[],
+            &helpers,
             &maps[..metadata.map_count as usize],
             false,
             sonde_bpf::interpreter::UNLIMITED_BUDGET,
             &[],
         )
+    };
+    unsafe {
+        ACTIVE_MAP_HELPERS = None;
     }
-    .map_err(|_| STATUS_BAD_COMMAND)
+    result.map_err(|_| STATUS_BAD_COMMAND)
+}
+
+fn bpf_map_layout(map: u64, state: &ActiveMapHelpers) -> Option<(usize, u32, u32, usize)> {
+    for index in 0..state.metadata.map_count as usize {
+        let metadata = state.metadata.maps[index];
+        let map_start = unsafe { state.backing.add(metadata.backing_offset as usize) } as u64;
+        if map == map_start {
+            return Some((
+                index,
+                metadata.key_size,
+                metadata.value_size,
+                metadata.backing_len as usize,
+            ));
+        }
+    }
+    None
+}
+
+fn bpf_map_lookup_elem(map: u64, key: u64, _value: u64, _flags: u64, _unused: u64) -> u64 {
+    let Some(state) = (unsafe { ACTIVE_MAP_HELPERS }) else {
+        return 0;
+    };
+    let Some((index, key_size, _value_size, backing_len)) = bpf_map_layout(map, &state) else {
+        return 0;
+    };
+    if key == 0 || key_size != 4 {
+        return 0;
+    }
+    let entry = unsafe { core::ptr::read_unaligned(key as *const u32) as usize };
+    let Some(range) = value_range(&state.metadata.maps[index], entry as u32) else {
+        return 0;
+    };
+    if range.end > backing_len {
+        return 0;
+    }
+    (unsafe {
+        state
+            .backing
+            .add(state.metadata.maps[index].backing_offset as usize + range.start)
+    }) as u64
+}
+
+fn bpf_map_update_elem(map: u64, key: u64, value: u64, flags: u64, _unused: u64) -> u64 {
+    let Some(state) = (unsafe { ACTIVE_MAP_HELPERS }) else {
+        return HELPER_ERROR;
+    };
+    let Some((index, key_size, value_size, backing_len)) = bpf_map_layout(map, &state) else {
+        return HELPER_ERROR;
+    };
+    if key == 0 || value == 0 || flags != 0 || key_size != 4 {
+        return HELPER_ERROR;
+    }
+    let entry = unsafe { core::ptr::read_unaligned(key as *const u32) as usize };
+    let value_size = value_size as usize;
+    let Some(range) = value_range(&state.metadata.maps[index], entry as u32) else {
+        return HELPER_ERROR;
+    };
+    if range.end > backing_len {
+        return HELPER_ERROR;
+    }
+    let destination = unsafe {
+        state
+            .backing
+            .add(state.metadata.maps[index].backing_offset as usize + range.start)
+    };
+    unsafe {
+        core::ptr::copy(value as *const u8, destination, value_size);
+    }
+    0
 }
 
 #[panic_handler]
