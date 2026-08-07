@@ -44,6 +44,8 @@ const BPF_SIZE_PROBE: [u8; 16] = [
     0xb7, 0x00, 0x00, 0x00, 0x2a, 0x00, 0x00, 0x00, // mov64 r0, 42
     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
 ];
+const BPF_RAM_START: u64 = 0x2000_0000;
+const BPF_RAM_END: u64 = BPF_RAM_START + 10 * 1024;
 
 struct ProtocolState {
     status_queue: StatusQueue,
@@ -222,6 +224,13 @@ fn bpf_map_layout(map: u64, state: &ActiveMapHelpers) -> Option<(usize, u32, u32
     None
 }
 
+fn valid_bpf_ram_range(pointer: u64, length: usize) -> bool {
+    pointer >= BPF_RAM_START
+        && pointer
+            .checked_add(length as u64)
+            .is_some_and(|end| end <= BPF_RAM_END)
+}
+
 fn bpf_map_lookup_elem(map: u64, key: u64, _value: u64, _flags: u64, _unused: u64) -> u64 {
     let Some(state) = (unsafe { ACTIVE_MAP_HELPERS }) else {
         return 0;
@@ -229,7 +238,7 @@ fn bpf_map_lookup_elem(map: u64, key: u64, _value: u64, _flags: u64, _unused: u6
     let Some((index, key_size, _value_size, backing_len)) = bpf_map_layout(map, &state) else {
         return 0;
     };
-    if key == 0 || key_size != 4 {
+    if key == 0 || key_size != 4 || !valid_bpf_ram_range(key, 4) {
         return 0;
     }
     let entry = unsafe { core::ptr::read_unaligned(key as *const u32) as usize };
@@ -253,7 +262,13 @@ fn bpf_map_update_elem(map: u64, key: u64, value: u64, flags: u64, _unused: u64)
     let Some((index, key_size, value_size, backing_len)) = bpf_map_layout(map, &state) else {
         return HELPER_ERROR;
     };
-    if key == 0 || value == 0 || flags != 0 || key_size != 4 {
+    if key == 0
+        || value == 0
+        || flags != 0
+        || key_size != 4
+        || !valid_bpf_ram_range(key, 4)
+        || !valid_bpf_ram_range(value, value_size as usize)
+    {
         return HELPER_ERROR;
     }
     let entry = unsafe { core::ptr::read_unaligned(key as *const u32) as usize };

@@ -137,8 +137,8 @@ size measurement.
 | --- | ---: |
 | I2C slave baseline | 8,078 bytes |
 | Full `sonde-bpf` interpreter with map writes | 23,562 bytes |
-| Release image with `base32`, `base64`, and `divmul32` conformance groups | 23,170 bytes |
-| Reduction from the full interpreter | 392 bytes (1.7%) |
+| Release image with `base32`, `base64`, and `divmul32` conformance groups | 23,274 bytes |
+| Reduction from the full interpreter | 288 bytes (1.2%) |
 | Remaining below the BPF partition at `0x6000` | 9,410 bytes |
 
 The firmware selects the RFC 9669 32-bit ALU (`base32`), 64-bit instruction

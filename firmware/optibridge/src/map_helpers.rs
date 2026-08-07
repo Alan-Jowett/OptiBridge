@@ -19,7 +19,8 @@ pub fn value_range(map: &BpfMapMetadata, entry: u32) -> Option<Range<usize>> {
 
 pub fn lookup<'a>(map: &BpfMapMetadata, entry: u32, backing: &'a [u8]) -> Option<&'a [u8]> {
     let range = value_range(map, entry)?;
-    backing.get(range)
+    let start = map.backing_offset as usize;
+    backing.get(start + range.start..start + range.end)
 }
 
 pub fn update(
@@ -32,7 +33,11 @@ pub fn update(
         return Err(());
     }
     let range = value_range(map, entry).ok_or(())?;
-    backing.get_mut(range).ok_or(())?.copy_from_slice(value);
+    let start = map.backing_offset as usize;
+    backing
+        .get_mut(start + range.start..start + range.end)
+        .ok_or(())?
+        .copy_from_slice(value);
     Ok(())
 }
 
@@ -60,10 +65,11 @@ mod tests {
     #[test]
     fn lookup_and_update_use_value_ranges() {
         let metadata = map();
-        let mut backing = [0; 8];
+        let mut backing = [0; 12];
         assert_eq!(lookup(&metadata, 0, &backing), Some(&[0, 0, 0, 0][..]));
         assert_eq!(update(&metadata, 1, &[1, 2, 3, 4], &mut backing), Ok(()));
         assert_eq!(lookup(&metadata, 1, &backing), Some(&[1, 2, 3, 4][..]));
+        assert_eq!(&backing[..4], &[0, 0, 0, 0]);
         assert_eq!(update(&metadata, 0, &[1, 2], &mut backing), Err(()));
     }
 }
