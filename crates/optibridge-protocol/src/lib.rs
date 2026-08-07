@@ -208,6 +208,9 @@ impl BpfLoader {
     }
 
     pub fn execution_metadata(&self) -> Result<BpfProgramMetadata, u8> {
+        if self.pending.is_some() {
+            return Err(STATUS_BUSY);
+        }
         match self.state {
             LoaderState::Committed(_) => {}
             LoaderState::Running(_) => return Err(STATUS_BAD_STATE),
@@ -774,7 +777,7 @@ pub fn dispatch_with_bpf(
         loader,
         map_backing,
         output,
-        |_metadata, _map_backing| Err(STATUS_BAD_COMMAND),
+        |_metadata, _map_backing| Err(STATUS_NOT_IMPLEMENTED),
     )
 }
 
@@ -1625,6 +1628,66 @@ mod tests {
     }
 
     #[test]
+    fn start_bpf_rejects_pending_loads_without_executing() {
+        let mut loader = BpfLoader::new();
+        let mut flash = FakeFlash::new();
+        let bytecode = [0u8; 8];
+        let crc = crc32_iso_hdlc(&bytecode);
+        assert_eq!(
+            loader.accepts_load(&load_request(&[
+                0,
+                8,
+                0,
+                0,
+                (crc & 0xff) as u8,
+                (crc >> 8) as u8,
+                (crc >> 16) as u8,
+                (crc >> 24) as u8,
+            ])),
+            Ok(())
+        );
+        execute(&mut loader, &mut flash);
+        let mut data = [0; 11];
+        data[0] = 1;
+        data[3..11].copy_from_slice(&bytecode);
+        assert_eq!(loader.accepts_load(&load_request(&data)), Ok(()));
+        execute(&mut loader, &mut flash);
+        assert_eq!(loader.accepts_load(&load_request(&[2])), Ok(()));
+        execute(&mut loader, &mut flash);
+
+        assert_eq!(
+            loader.accepts_load(&load_request(&[
+                0,
+                8,
+                0,
+                0,
+                (crc & 0xff) as u8,
+                (crc >> 8) as u8,
+                (crc >> 16) as u8,
+                (crc >> 24) as u8,
+            ])),
+            Ok(())
+        );
+        let mut request = Request::empty();
+        request.command = CMD_START_BPF;
+        request.sequence = 16;
+        let mut status_queue = StatusQueue::ready();
+        let mut backing = [0; BPF_MAX_MAP_BYTES];
+        let mut output = [0; MAX_FRAME];
+        let length = response_length(dispatch_with_bpf_and_executor(
+            &request,
+            &mut status_queue,
+            &mut loader,
+            &mut backing,
+            &mut output,
+            |_metadata, _backing| panic!("pending Start must not invoke the executor"),
+        ));
+        assert_eq!(&output[..length], &[MAGIC, STATUS_BUSY, 0, 16, 0]);
+        assert!(loader.has_pending());
+        assert_eq!(loader.query(), Err(STATUS_BUSY));
+    }
+
+    #[test]
     fn read_bpf_map_returns_committed_backing_ranges_and_errors() {
         let mut image = [0u8; 40];
         image[8..12].copy_from_slice(&1u32.to_le_bytes());
@@ -1907,6 +1970,19 @@ mod tests {
         assert_eq!(
             &output[..length],
             &[MAGIC, STATUS_OK, 5, 9, 0, b'r', b'e', b'a', b'd', b'y']
+        );
+
+        request.command = CMD_START_BPF;
+        let length = response_length(dispatch_with_bpf(
+            &request,
+            &mut status_queue,
+            &mut loader,
+            &mut map_backing,
+            &mut output,
+        ));
+        assert_eq!(
+            &output[..length],
+            &[MAGIC, STATUS_NOT_IMPLEMENTED, 0, 9, 0]
         );
     }
 
